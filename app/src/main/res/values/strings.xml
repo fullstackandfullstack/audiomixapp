@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Audio Mixer</string>
+    <string name="add_track">Add Track</string>
+    <string name="add_announcement">Add Announcement</string>
+    <string name="play">Play</string>
+    <string name="pause">Pause</string>
+    <string name="stop">Stop</string>
+    <string name="main_volume">Main Volume</string>
+    <string name="announcement_volume">Announcement Volume</string>
+    <string name="announcement_interval">Announcement Interval (seconds)</string>
+    <string name="play_at_end">Play at End Only</string>
+    <string name="no_tracks">No tracks loaded</string>
+    <string name="select_audio_file">Select Audio File</string>
+    <string name="playlists">Playlists</string>
+    <string name="create_playlist">Create Playlist</string>
+    <string name="select_playlist">Select Playlist</string>
+    <string name="new_playlist">New Playlist</string>
+    <string name="playlist_name">Playlist Name</string>
+    <string name="enter_playlist_name">Enter playlist name</string>
+    <string name="no_playlist_selected">No playlist selected</string>
+    <string name="selected_playlist">Selected: %1$s</string>
+    <string name="delete_playlist">Delete</string>
+    <string name="rename_playlist">Rename</string>
+    <string name="announcements">Announcements</string>
+    <string name="drag_to_reorder">Drag to reorder</string>
+</resources>
+
