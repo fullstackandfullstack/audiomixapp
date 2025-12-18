@@ -19,6 +19,16 @@ public class MP3Decoder {
     private static final String TAG = "MP3Decoder";
     
     /**
+     * Decode an audio file (MP3, WAV, etc.) to 16-bit PCM stereo at 44.1kHz
+     * @param file The audio file to decode
+     * @return Array of 16-bit PCM samples (interleaved stereo)
+     * @throws IOException If decoding fails
+     */
+    public static short[] decodeAudio(File file) throws IOException {
+        return decodeMP3(file);
+    }
+    
+    /**
      * Decode an MP3 file to 16-bit PCM stereo at 44.1kHz
      * @param file The MP3 file to decode
      * @return Array of 16-bit PCM samples (interleaved stereo)
@@ -29,7 +39,14 @@ public class MP3Decoder {
         MediaCodec decoder = null;
         
         try {
-            extractor.setDataSource(file.getAbsolutePath());
+            // Support both file paths and content URIs
+            String dataSource = file.getAbsolutePath();
+            try {
+                extractor.setDataSource(dataSource);
+            } catch (Exception e) {
+                // Try as content URI if file path fails
+                extractor.setDataSource(file.getPath());
+            }
             
             // Find the audio track
             int trackIndex = -1;

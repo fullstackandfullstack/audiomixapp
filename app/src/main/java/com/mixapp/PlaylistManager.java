@@ -6,6 +6,12 @@ import android.util.Log;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.ObjectInputStream;
+import java.io.ObjectOutputStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -36,7 +42,7 @@ public class PlaylistManager {
         String id = UUID.randomUUID().toString();
         Playlist playlist = new Playlist(name, id);
         playlists.add(playlist);
-        savePlaylists();
+        savePlaylist(playlist);
         Log.d(TAG, "Created playlist: " + name);
         return playlist;
     }
@@ -67,7 +73,8 @@ public class PlaylistManager {
         Playlist playlist = getPlaylistById(id);
         if (playlist != null) {
             playlists.remove(playlist);
-            savePlaylists();
+            deletePlaylistFiles(id);
+            savePlaylistList();
             Log.d(TAG, "Deleted playlist: " + playlist.getName());
             return true;
         }
@@ -81,36 +88,180 @@ public class PlaylistManager {
         Playlist playlist = getPlaylistById(id);
         if (playlist != null) {
             playlist.setName(newName);
-            savePlaylists();
+            savePlaylist(playlist);
             return true;
         }
         return false;
     }
     
     /**
-     * Save playlists to SharedPreferences
-     * Note: Only saves playlist metadata, not audio data
+     * Save a playlist with all its data
      */
-    private void savePlaylists() {
+    public void savePlaylist(Playlist playlist) {
+        try {
+            File playlistDir = getPlaylistDirectory();
+            if (!playlistDir.exists()) {
+                playlistDir.mkdirs();
+            }
+            
+            File playlistFile = new File(playlistDir, playlist.getId() + ".json");
+            JSONObject json = new JSONObject();
+            json.put("id", playlist.getId());
+            json.put("name", playlist.getName());
+            
+            // Save tracks
+            JSONArray tracksArray = new JSONArray();
+            for (int i = 0; i < playlist.getTracks().size(); i++) {
+                AudioMixer.TrackData track = playlist.getTracks().get(i);
+                JSONObject trackJson = new JSONObject();
+                trackJson.put("name", track.name);
+                trackJson.put("index", i);
+                // Save PCM data to separate file
+                String trackFileName = playlist.getId() + "_track_" + i + ".pcm";
+                savePCMData(track.pcmData, trackFileName);
+                trackJson.put("dataFile", trackFileName);
+                tracksArray.put(trackJson);
+            }
+            json.put("tracks", tracksArray);
+            
+            // Save announcements
+            JSONArray announcementsArray = new JSONArray();
+            for (int i = 0; i < playlist.getAnnouncements().size(); i++) {
+                AudioMixer.AnnouncementData ann = playlist.getAnnouncements().get(i);
+                JSONObject annJson = new JSONObject();
+                annJson.put("name", ann.name);
+                annJson.put("index", i);
+                // Save PCM data to separate file
+                String annFileName = playlist.getId() + "_ann_" + i + ".pcm";
+                savePCMData(ann.pcmData, annFileName);
+                annJson.put("dataFile", annFileName);
+                announcementsArray.put(annJson);
+            }
+            json.put("announcements", announcementsArray);
+            
+            // Write JSON file
+            FileOutputStream fos = new FileOutputStream(playlistFile);
+            fos.write(json.toString().getBytes());
+            fos.close();
+            
+            // Update playlist list
+            savePlaylistList();
+            
+            Log.d(TAG, "Saved playlist: " + playlist.getName());
+        } catch (Exception e) {
+            Log.e(TAG, "Error saving playlist", e);
+        }
+    }
+    
+    /**
+     * Load a playlist with all its data
+     */
+    public Playlist loadPlaylist(String playlistId) {
+        try {
+            File playlistDir = getPlaylistDirectory();
+            File playlistFile = new File(playlistDir, playlistId + ".json");
+            
+            if (!playlistFile.exists()) {
+                return null;
+            }
+            
+            // Read JSON file
+            FileInputStream fis = new FileInputStream(playlistFile);
+            byte[] buffer = new byte[(int) playlistFile.length()];
+            fis.read(buffer);
+            fis.close();
+            
+            JSONObject json = new JSONObject(new String(buffer));
+            String id = json.getString("id");
+            String name = json.getString("name");
+            Playlist playlist = new Playlist(name, id);
+            
+            // Load tracks
+            JSONArray tracksArray = json.getJSONArray("tracks");
+            for (int i = 0; i < tracksArray.length(); i++) {
+                JSONObject trackJson = tracksArray.getJSONObject(i);
+                String trackName = trackJson.getString("name");
+                String dataFile = trackJson.getString("dataFile");
+                short[] pcmData = loadPCMData(dataFile);
+                AudioMixer.TrackData track = new AudioMixer.TrackData(trackName, pcmData);
+                playlist.addTrack(track);
+            }
+            
+            // Load announcements
+            JSONArray announcementsArray = json.getJSONArray("announcements");
+            for (int i = 0; i < announcementsArray.length(); i++) {
+                JSONObject annJson = announcementsArray.getJSONObject(i);
+                String annName = annJson.getString("name");
+                String dataFile = annJson.getString("dataFile");
+                short[] pcmData = loadPCMData(dataFile);
+                AudioMixer.AnnouncementData ann = new AudioMixer.AnnouncementData(annName, pcmData);
+                playlist.addAnnouncement(ann);
+            }
+            
+            Log.d(TAG, "Loaded playlist: " + name + " (" + playlist.getTracks().size() + " tracks, " + 
+                  playlist.getAnnouncements().size() + " announcements)");
+            return playlist;
+        } catch (Exception e) {
+            Log.e(TAG, "Error loading playlist", e);
+            return null;
+        }
+    }
+    
+    /**
+     * Save PCM data to file
+     */
+    private void savePCMData(short[] pcmData, String fileName) throws IOException {
+        File playlistDir = getPlaylistDirectory();
+        File dataFile = new File(playlistDir, fileName);
+        FileOutputStream fos = new FileOutputStream(dataFile);
+        ObjectOutputStream oos = new ObjectOutputStream(fos);
+        oos.writeObject(pcmData);
+        oos.close();
+        fos.close();
+    }
+    
+    /**
+     * Load PCM data from file
+     */
+    private short[] loadPCMData(String fileName) throws IOException, ClassNotFoundException {
+        File playlistDir = getPlaylistDirectory();
+        File dataFile = new File(playlistDir, fileName);
+        FileInputStream fis = new FileInputStream(dataFile);
+        ObjectInputStream ois = new ObjectInputStream(fis);
+        short[] pcmData = (short[]) ois.readObject();
+        ois.close();
+        fis.close();
+        return pcmData;
+    }
+    
+    /**
+     * Get playlist storage directory
+     */
+    private File getPlaylistDirectory() {
+        File appDir = context.getFilesDir();
+        return new File(appDir, "playlists");
+    }
+    
+    /**
+     * Save playlist list (metadata only)
+     */
+    private void savePlaylistList() {
         try {
             JSONArray jsonArray = new JSONArray();
             for (Playlist playlist : playlists) {
                 JSONObject json = new JSONObject();
                 json.put("id", playlist.getId());
                 json.put("name", playlist.getName());
-                json.put("trackCount", playlist.getTracks().size());
-                json.put("announcementCount", playlist.getAnnouncements().size());
                 jsonArray.put(json);
             }
             prefs.edit().putString(KEY_PLAYLISTS, jsonArray.toString()).apply();
         } catch (JSONException e) {
-            Log.e(TAG, "Error saving playlists", e);
+            Log.e(TAG, "Error saving playlist list", e);
         }
     }
     
     /**
-     * Load playlists from SharedPreferences
-     * Note: Only loads metadata, tracks/announcements need to be loaded separately
+     * Load playlists from SharedPreferences (metadata only, actual data loaded on demand)
      */
     private void loadPlaylists() {
         try {
@@ -122,7 +273,12 @@ public class PlaylistManager {
                 JSONObject json = jsonArray.getJSONObject(i);
                 String id = json.getString("id");
                 String name = json.getString("name");
-                Playlist playlist = new Playlist(name, id);
+                // Load full playlist data
+                Playlist playlist = loadPlaylist(id);
+                if (playlist == null) {
+                    // If loading fails, create empty playlist
+                    playlist = new Playlist(name, id);
+                }
                 playlists.add(playlist);
             }
             
@@ -130,6 +286,29 @@ public class PlaylistManager {
         } catch (JSONException e) {
             Log.e(TAG, "Error loading playlists", e);
             playlists.clear();
+        }
+    }
+    
+    /**
+     * Delete playlist files
+     */
+    public void deletePlaylistFiles(String playlistId) {
+        try {
+            File playlistDir = getPlaylistDirectory();
+            File[] files = playlistDir.listFiles();
+            if (files != null) {
+                for (File file : files) {
+                    if (file.getName().startsWith(playlistId + "_")) {
+                        file.delete();
+                    }
+                }
+            }
+            File playlistFile = new File(playlistDir, playlistId + ".json");
+            if (playlistFile.exists()) {
+                playlistFile.delete();
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Error deleting playlist files", e);
         }
     }
 }

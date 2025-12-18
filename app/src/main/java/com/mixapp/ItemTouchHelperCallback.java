@@ -8,11 +8,17 @@ import androidx.recyclerview.widget.RecyclerView;
  * Callback for handling drag-and-drop in RecyclerView
  */
 public class ItemTouchHelperCallback extends ItemTouchHelper.SimpleCallback {
-    private AnnouncementAdapter adapter;
+    private AnnouncementAdapter announcementAdapter;
+    private TrackAdapter trackAdapter;
     
     public ItemTouchHelperCallback(AnnouncementAdapter adapter) {
         super(ItemTouchHelper.UP | ItemTouchHelper.DOWN, 0);
-        this.adapter = adapter;
+        this.announcementAdapter = adapter;
+    }
+    
+    public ItemTouchHelperCallback(TrackAdapter adapter) {
+        super(ItemTouchHelper.UP | ItemTouchHelper.DOWN, 0);
+        this.trackAdapter = adapter;
     }
     
     @Override
@@ -31,7 +37,11 @@ public class ItemTouchHelperCallback extends ItemTouchHelper.SimpleCallback {
             return false;
         }
         
-        adapter.moveItem(fromPosition, toPosition);
+        if (announcementAdapter != null) {
+            announcementAdapter.moveItem(fromPosition, toPosition);
+        } else if (trackAdapter != null) {
+            trackAdapter.moveItem(fromPosition, toPosition);
+        }
         return true;
     }
     

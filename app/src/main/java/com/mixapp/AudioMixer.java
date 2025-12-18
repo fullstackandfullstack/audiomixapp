@@ -45,6 +45,9 @@ public class AudioMixer {
     private boolean playAtEndOnly = false;
     private int nextAnnouncementIndex = 0; // Track which announcement should play next in sequence
     
+    // Sequential track playback
+    private int currentTrackIndex = 0; // Track which main track is currently playing
+    
     // Fade in support
     private float fadeDurationSeconds = 3.0f; // Fade duration in seconds (3 seconds fade in)
     private float currentMainVolumeMultiplier = 0.0f; // Start at 0 so announcement is heard first
@@ -116,15 +119,22 @@ public class AudioMixer {
     }
     
     /**
-     * Load an MP3 file and convert to PCM data using MediaCodec
+     * Load an audio file (MP3, WAV, etc.) and convert to PCM data using MediaCodec
      */
     public TrackData loadAudioFile(File file) throws IOException {
-        Log.d(TAG, "Loading audio file: " + file.getName());
+        return loadAudioFile(file, file.getName());
+    }
+    
+    /**
+     * Load an audio file with a custom name
+     */
+    public TrackData loadAudioFile(File file, String displayName) throws IOException {
+        Log.d(TAG, "Loading audio file: " + displayName);
         
-        // Decode MP3 to PCM
-        short[] samples = MP3Decoder.decodeMP3(file);
+        // Decode audio to PCM (supports MP3, WAV, and other formats)
+        short[] samples = MP3Decoder.decodeAudio(file);
         
-        return new TrackData(file.getName(), samples);
+        return new TrackData(displayName, samples);
     }
     
     /**
@@ -214,6 +224,7 @@ public class AudioMixer {
         
         // Reset sequence tracking to start from beginning
         nextAnnouncementIndex = 0;
+        currentTrackIndex = 0;
         
         Log.d(TAG, "Loaded playlist: " + playlist.getName() + 
               " (Tracks: " + playlist.getTracks().size() + 
@@ -276,6 +287,7 @@ public class AudioMixer {
         
         // Reset sequence tracking
         nextAnnouncementIndex = 0;
+        currentTrackIndex = 0; // Start with first track
         
         // Reset fade state - start at 0, then fade in over 3 seconds
         currentMainVolumeMultiplier = 0.0f;
@@ -349,6 +361,7 @@ public class AudioMixer {
                 track.currentPosition = 0;
             }
         }
+        currentTrackIndex = 0;
         
         synchronized (announcements) {
             for (AnnouncementData ann : announcements) {
@@ -363,6 +376,7 @@ public class AudioMixer {
         isFadingIn = false;
         fadeStartTime = 0;
         nextAnnouncementIndex = 0;
+        currentTrackIndex = 0;
         
         shouldStop.set(false); // Reset for next play
     }
@@ -376,17 +390,14 @@ public class AudioMixer {
         long startTime = System.currentTimeMillis();
         long totalSamplesPlayed = 0;
         
-        // Track the longest main track duration for "play at end" detection
-        long longestTrackDurationSamples = 0;
+        // Track total duration of all tracks for "play at end" detection
+        long totalTrackDurationSamples = 0;
         synchronized (mainTracks) {
             for (TrackData track : mainTracks) {
-                long trackSamples = track.sampleCount;
-                if (trackSamples > longestTrackDurationSamples) {
-                    longestTrackDurationSamples = trackSamples;
-                }
+                totalTrackDurationSamples += track.sampleCount;
             }
         }
-        long longestTrackDurationMs = (longestTrackDurationSamples * 1000) / SAMPLE_RATE;
+        long totalTrackDurationMs = (totalTrackDurationSamples * 1000) / SAMPLE_RATE;
         
         while (!shouldStop.get() && isPlaying.get()) {
             // Clear mix buffer
@@ -419,10 +430,44 @@ public class AudioMixer {
             
             currentMainVolumeMultiplier = mainVolumeMultiplier;
             
-            // Mix all main tracks with fade multiplier
+            // Play tracks sequentially - only play the current track
+            TrackData currentTrack = null;
             synchronized (mainTracks) {
-                for (TrackData track : mainTracks) {
-                    mixTrack(track, mixBuffer, samplesPerBuffer, mainVolume * mainVolumeMultiplier);
+                if (!mainTracks.isEmpty() && currentTrackIndex < mainTracks.size()) {
+                    currentTrack = mainTracks.get(currentTrackIndex);
+                }
+            }
+            
+            if (currentTrack != null) {
+                // Mix only the current track
+                mixTrack(currentTrack, mixBuffer, samplesPerBuffer, mainVolume * mainVolumeMultiplier);
+                
+                // Check if current track finished
+                if (currentTrack.currentPosition >= currentTrack.pcmData.length) {
+                    // Move to next track
+                    synchronized (mainTracks) {
+                        currentTrackIndex++;
+                        if (currentTrackIndex >= mainTracks.size()) {
+                            // All tracks finished
+                            if (!playAtEndOnly) {
+                                // Loop back to first track for continuous playback
+                                currentTrackIndex = 0;
+                                // Reset all track positions for next cycle
+                                for (TrackData track : mainTracks) {
+                                    track.currentPosition = 0;
+                                }
+                            } else {
+                                // For "Play at End Only", stop at the end
+                                // Don't reset currentTrackIndex, keep it at mainTracks.size()
+                                // This signals that all tracks have finished
+                            }
+                        } else {
+                            // Reset next track position
+                            if (currentTrackIndex < mainTracks.size()) {
+                                mainTracks.get(currentTrackIndex).currentPosition = 0;
+                            }
+                        }
+                    }
                 }
             }
             
@@ -470,11 +515,21 @@ public class AudioMixer {
                 int announcementIndexToPlay = -1;
                 
                 if (playAtEndOnly) {
-                    // Play at end only - check if we're near the end of the longest track
-                    long elapsedMs = currentTime - startTime;
-                    // Play when we're within 1 second of the end (or past it)
-                    if (longestTrackDurationMs > 0 && elapsedMs >= (longestTrackDurationMs - 1000)) {
-                        // Find first announcement that hasn't played yet
+                    // Play at end only - check if all tracks have finished playing
+                    boolean allTracksFinished = false;
+                    synchronized (mainTracks) {
+                        if (mainTracks.isEmpty()) {
+                            allTracksFinished = false;
+                        } else {
+                            // Check if we've finished all tracks (currentTrackIndex >= size means all done)
+                            if (currentTrackIndex >= mainTracks.size()) {
+                                allTracksFinished = true;
+                            }
+                        }
+                    }
+                    
+                    if (allTracksFinished) {
+                        // All tracks finished - find first announcement that hasn't played yet
                         synchronized (announcements) {
                             for (int i = 0; i < announcements.size(); i++) {
                                 AnnouncementData ann = announcements.get(i);
@@ -593,10 +648,9 @@ public class AudioMixer {
         // Update position
         track.currentPosition += samplesToMix;
         
-        // Loop if needed
-        if (track.isLooping && track.currentPosition >= track.pcmData.length) {
-            track.currentPosition = 0;
-        }
+        // For sequential playback, tracks don't loop individually
+        // They play once and move to next track
+        // (Looping is handled at the playlist level by resetting currentTrackIndex)
     }
     
     /**

@@ -12,6 +12,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.InputType;
+import android.util.Log;
 import android.view.MenuItem;
 import android.view.View;
 import android.widget.Button;
@@ -64,16 +65,23 @@ public class MainActivity extends AppCompatActivity {
     private TextView tvStatus;
     private TextView tvIntervalValue;
     private TextView tvSelectedPlaylist;
+    private TextView tvMenuPath;
+    private RecyclerView recyclerTracks;
     private RecyclerView recyclerAnnouncements;
     
     private Handler mainHandler;
     private AnnouncementAdapter announcementAdapter;
+    private TrackAdapter trackAdapter;
+    private PlaylistAdapter playlistAdapter;
     private boolean isAddingTrack = false;
+    private boolean isHomeScreen = true;
+    private View homeView;
+    private RecyclerView recyclerPlaylists;
+    private TextView tvEmptyState;
     
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        setContentView(R.layout.activity_main);
         
         mainHandler = new Handler(Looper.getMainLooper());
         
@@ -82,15 +90,96 @@ public class MainActivity extends AppCompatActivity {
         audioMixer = new AudioMixer();
         audioMixer.initialize();
         
+        // Load all playlists on startup
+        loadAllPlaylists();
+        
+        // Show home screen first
+        showHomeScreen();
+        
+        // Request permissions
+        requestPermissions();
+    }
+    
+    /**
+     * Show the home screen with list of playlists
+     */
+    private void showHomeScreen() {
+        isHomeScreen = true;
+        setContentView(R.layout.activity_home);
+        
+        tvMenuPath = findViewById(R.id.tvMenuPath);
+        recyclerPlaylists = findViewById(R.id.recyclerPlaylists);
+        tvEmptyState = findViewById(R.id.tvEmptyState);
+        ImageButton btnMenu = findViewById(R.id.btnMenu);
+        
+        tvMenuPath.setText("Home");
+        
+        // Setup playlist RecyclerView
+        playlistAdapter = new PlaylistAdapter(
+            playlistManager.getAllPlaylists(),
+            playlist -> {
+                // Open playlist detail screen
+                showPlaylistDetail(playlist);
+            }
+        );
+        recyclerPlaylists.setLayoutManager(new LinearLayoutManager(this));
+        recyclerPlaylists.setAdapter(playlistAdapter);
+        
+        // Menu button
+        btnMenu.setOnClickListener(v -> showHomeMenu());
+        
+        updateHomeScreen();
+    }
+    
+    /**
+     * Show playlist detail screen
+     */
+    private void showPlaylistDetail(Playlist playlist) {
+        isHomeScreen = false;
+        setContentView(R.layout.activity_main);
+        
         // Initialize UI components
         initializeViews();
         setupListeners();
         setupRecyclerView();
         
-        // Request permissions
-        requestPermissions();
+        // Select the playlist
+        selectPlaylist(playlist);
+    }
+    
+    /**
+     * Show home menu
+     */
+    private void showHomeMenu() {
+        PopupMenu popup = new PopupMenu(this, findViewById(R.id.btnMenu));
+        popup.getMenu().add("Create New Playlist");
+        popup.getMenu().add("Lists");
         
-        updateUI();
+        popup.setOnMenuItemClickListener(item -> {
+            String title = item.getTitle().toString();
+            if (title.equals("Create New Playlist")) {
+                showCreatePlaylistDialog();
+            } else if (title.equals("Lists")) {
+                // Already on lists screen
+            }
+            return true;
+        });
+        popup.show();
+    }
+    
+    /**
+     * Update home screen display
+     */
+    private void updateHomeScreen() {
+        List<Playlist> playlists = playlistManager.getAllPlaylists();
+        if (playlists.isEmpty()) {
+            recyclerPlaylists.setVisibility(View.GONE);
+            tvEmptyState.setVisibility(View.VISIBLE);
+        } else {
+            recyclerPlaylists.setVisibility(View.VISIBLE);
+            tvEmptyState.setVisibility(View.GONE);
+            playlistAdapter.updateList(playlists);
+        }
     }
     
     /**
@@ -111,13 +200,59 @@ public class MainActivity extends AppCompatActivity {
         tvStatus = findViewById(R.id.tvStatus);
         tvIntervalValue = findViewById(R.id.tvIntervalValue);
         tvSelectedPlaylist = findViewById(R.id.tvSelectedPlaylist);
+        tvMenuPath = findViewById(R.id.tvMenuPath);
+        recyclerTracks = findViewById(R.id.recyclerTracks);
         recyclerAnnouncements = findViewById(R.id.recyclerAnnouncements);
     }
     
     /**
-     * Setup RecyclerView for announcements with drag-and-drop
+     * Setup RecyclerView for tracks and announcements with drag-and-drop
      */
     private void setupRecyclerView() {
+        // Setup tracks RecyclerView
+        trackAdapter = new TrackAdapter(
+            currentPlaylist != null ? currentPlaylist.getTracks() : null,
+            (fromPosition, toPosition) -> {
+                if (currentPlaylist != null && audioMixer != null) {
+                    // Get the current order from adapter
+                    List<AudioMixer.TrackData> adapterList = trackAdapter.getTracks();
+                    if (adapterList != null && !adapterList.isEmpty()) {
+                        // Update playlist to match adapter order
+                        List<AudioMixer.TrackData> newList = new ArrayList<>();
+                        for (AudioMixer.TrackData track : adapterList) {
+                            newList.add(track);
+                        }
+                        
+                        // Replace playlist tracks with new ordered list
+                        currentPlaylist.getTracks().clear();
+                        currentPlaylist.getTracks().addAll(newList);
+                        
+                        // Save and reload
+                        playlistManager.savePlaylist(currentPlaylist);
+                        boolean wasPlaying = audioMixer.isPlaying();
+                        if (wasPlaying) {
+                            audioMixer.stop();
+                        }
+                        audioMixer.loadPlaylist(currentPlaylist);
+                        if (wasPlaying) {
+                            audioMixer.play();
+                        }
+                    }
+                }
+            }
+        );
+        
+        if (recyclerTracks != null) {
+            recyclerTracks.setLayoutManager(new LinearLayoutManager(this));
+            recyclerTracks.setAdapter(trackAdapter);
+            
+            // Enable drag-and-drop for tracks
+            ItemTouchHelper.Callback trackCallback = new ItemTouchHelperCallback(trackAdapter);
+            ItemTouchHelper trackTouchHelper = new ItemTouchHelper(trackCallback);
+            trackTouchHelper.attachToRecyclerView(recyclerTracks);
+        }
+        
+        // Setup announcements RecyclerView
         announcementAdapter = new AnnouncementAdapter(
             currentPlaylist != null ? currentPlaylist.getAnnouncements() : null,
             (fromPosition, toPosition) -> {
@@ -282,13 +417,16 @@ public class MainActivity extends AppCompatActivity {
      */
     private void showPlaylistMenu() {
         PopupMenu popup = new PopupMenu(this, btnMenu);
+        popup.getMenu().add("Home");
         popup.getMenu().add("Create New Playlist");
         popup.getMenu().add("Select Playlist");
         popup.getMenu().add("Manage Playlists");
         
         popup.setOnMenuItemClickListener(item -> {
             String title = item.getTitle().toString();
-            if (title.equals("Create New Playlist")) {
+            if (title.equals("Home")) {
+                showHomeScreen();
+            } else if (title.equals("Create New Playlist")) {
                 showCreatePlaylistDialog();
             } else if (title.equals("Select Playlist")) {
                 showPlaylistSelectionDialog(true);
@@ -323,7 +461,14 @@ public class MainActivity extends AppCompatActivity {
             String name = input.getText().toString().trim();
             if (!name.isEmpty()) {
                 Playlist playlist = playlistManager.createPlaylist(name);
-                selectPlaylist(playlist);
+                if (isHomeScreen) {
+                    // If on home screen, update it
+                    updateHomeScreen();
+                    // Then show playlist detail
+                    showPlaylistDetail(playlist);
+                } else {
+                    selectPlaylist(playlist);
+                }
                 Toast.makeText(this, "Playlist created: " + name, Toast.LENGTH_SHORT).show();
                 if (pickFileAfter) {
                     // Pick file after creating playlist
@@ -468,7 +613,11 @@ public class MainActivity extends AppCompatActivity {
             if (!name.isEmpty()) {
                 playlistManager.updatePlaylistName(playlist.getId(), name);
                 playlist.setName(name);
-                updateUI();
+                if (isHomeScreen) {
+                    updateHomeScreen();
+                } else {
+                    updateUI();
+                }
                 Toast.makeText(this, "Playlist renamed", Toast.LENGTH_SHORT).show();
             }
         });
@@ -477,19 +626,25 @@ public class MainActivity extends AppCompatActivity {
     }
     
     /**
-     * Show dialog to delete a playlist
+     * Show dialog to delete a playlist with confirmation
      */
     private void showDeletePlaylistDialog(Playlist playlist) {
         AlertDialog.Builder builder = new AlertDialog.Builder(this);
         builder.setTitle("Delete Playlist");
-        builder.setMessage("Are you sure you want to delete \"" + playlist.getName() + "\"?");
+        builder.setMessage("Are you sure you want to delete \"" + playlist.getName() + "\"?\n\n" +
+                          "This will permanently delete the playlist and all its tracks and announcements.");
         builder.setPositiveButton("Delete", (dialog, which) -> {
             playlistManager.deletePlaylist(playlist.getId());
             if (currentPlaylist != null && currentPlaylist.getId().equals(playlist.getId())) {
                 currentPlaylist = null;
                 audioMixer.clearAll();
+                // Go back to home screen
+                showHomeScreen();
+            } else if (isHomeScreen) {
+                updateHomeScreen();
+            } else {
+                updateUI();
             }
-            updateUI();
             Toast.makeText(this, "Playlist deleted", Toast.LENGTH_SHORT).show();
         });
         builder.setNegativeButton("Cancel", null);
@@ -497,13 +652,32 @@ public class MainActivity extends AppCompatActivity {
     }
     
     /**
+     * Load all playlists from storage
+     */
+    private void loadAllPlaylists() {
+        List<Playlist> savedPlaylists = playlistManager.getAllPlaylists();
+        for (Playlist playlist : savedPlaylists) {
+            // Playlists are already loaded by PlaylistManager
+            Log.d(TAG, "Loaded playlist: " + playlist.getName() + 
+                  " (" + playlist.getTracks().size() + " tracks, " + 
+                  playlist.getAnnouncements().size() + " announcements)");
+        }
+    }
+    
+    /**
      * Select a playlist and load it into the mixer
      */
     private void selectPlaylist(Playlist playlist) {
-        currentPlaylist = playlist;
-        audioMixer.loadPlaylist(playlist);
+        // Reload playlist from storage to ensure we have latest data
+        Playlist loadedPlaylist = playlistManager.loadPlaylist(playlist.getId());
+        if (loadedPlaylist != null) {
+            currentPlaylist = loadedPlaylist;
+        } else {
+            currentPlaylist = playlist;
+        }
+        audioMixer.loadPlaylist(currentPlaylist);
         updateUI();
-        updateStatus("Playlist selected: " + playlist.getName());
+        updateStatus("Playlist selected: " + currentPlaylist.getName());
     }
     
     /**
@@ -578,7 +752,21 @@ public class MainActivity extends AppCompatActivity {
         
         new Thread(() -> {
             try {
-                File tempFile = File.createTempFile("audio_", ".mp3", getCacheDir());
+                // Extract original filename from URI
+                String fileName = getFileNameFromUri(uri);
+                if (fileName == null || fileName.isEmpty()) {
+                    fileName = "audio_" + System.currentTimeMillis();
+                }
+                
+                // Determine file extension
+                String extension = "";
+                int lastDot = fileName.lastIndexOf('.');
+                if (lastDot > 0) {
+                    extension = fileName.substring(lastDot);
+                }
+                
+                // Create temp file with original extension
+                File tempFile = File.createTempFile("audio_", extension, getCacheDir());
                 tempFile.deleteOnExit();
                 
                 InputStream inputStream = getContentResolver().openInputStream(uri);
@@ -596,8 +784,9 @@ public class MainActivity extends AppCompatActivity {
                 inputStream.close();
                 
                 if (isMainTrack) {
-                    AudioMixer.TrackData track = audioMixer.loadAudioFile(tempFile);
+                    AudioMixer.TrackData track = audioMixer.loadAudioFile(tempFile, fileName);
                     currentPlaylist.addTrack(track);
+                    playlistManager.savePlaylist(currentPlaylist); // Save after adding
                     mainHandler.post(() -> {
                         updateStatus("Track added: " + track.name);
                         updateUI();
@@ -605,10 +794,11 @@ public class MainActivity extends AppCompatActivity {
                                 Toast.LENGTH_SHORT).show();
                     });
                 } else {
-                    AudioMixer.TrackData track = audioMixer.loadAudioFile(tempFile);
+                    AudioMixer.TrackData track = audioMixer.loadAudioFile(tempFile, fileName);
                     AudioMixer.AnnouncementData announcement = 
                         new AudioMixer.AnnouncementData(track.name, track.pcmData);
                     currentPlaylist.addAnnouncement(announcement);
+                    playlistManager.savePlaylist(currentPlaylist); // Save after adding
                     mainHandler.post(() -> {
                         updateStatus("Announcement added: " + announcement.name);
                         updateUI();
@@ -616,6 +806,9 @@ public class MainActivity extends AppCompatActivity {
                                 Toast.LENGTH_SHORT).show();
                     });
                 }
+                
+                // Save playlist after adding track/announcement
+                playlistManager.savePlaylist(currentPlaylist);
                 
                 // Reload playlist to mixer
                 audioMixer.loadPlaylist(currentPlaylist);
@@ -629,6 +822,40 @@ public class MainActivity extends AppCompatActivity {
                 });
             }
         }).start();
+    }
+    
+    /**
+     * Extract filename from URI
+     */
+    private String getFileNameFromUri(Uri uri) {
+        String fileName = null;
+        
+        // Try to get filename from ContentResolver
+        try {
+            android.database.Cursor cursor = getContentResolver().query(uri, null, null, null, null);
+            if (cursor != null && cursor.moveToFirst()) {
+                int nameIndex = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME);
+                if (nameIndex >= 0) {
+                    fileName = cursor.getString(nameIndex);
+                }
+                cursor.close();
+            }
+        } catch (Exception e) {
+            // Ignore
+        }
+        
+        // Fallback: try to extract from URI path
+        if (fileName == null || fileName.isEmpty()) {
+            String path = uri.getPath();
+            if (path != null) {
+                int lastSlash = path.lastIndexOf('/');
+                if (lastSlash >= 0 && lastSlash < path.length() - 1) {
+                    fileName = path.substring(lastSlash + 1);
+                }
+            }
+        }
+        
+        return fileName;
     }
     
     /**
@@ -650,10 +877,16 @@ public class MainActivity extends AppCompatActivity {
         // Update playlist display
         if (currentPlaylist != null) {
             tvSelectedPlaylist.setText(getString(R.string.selected_playlist, currentPlaylist.getName()));
+            if (tvMenuPath != null) {
+                tvMenuPath.setText("Home > Lists > " + currentPlaylist.getName());
+            }
             updateTrackList();
             updateAnnouncementList();
         } else {
             tvSelectedPlaylist.setText(getString(R.string.no_playlist_selected));
+            if (tvMenuPath != null) {
+                tvMenuPath.setText("Home > Lists >");
+            }
             tvTracks.setText(getString(R.string.no_tracks));
             announcementAdapter.updateList(null);
         }
@@ -664,23 +897,40 @@ public class MainActivity extends AppCompatActivity {
      */
     private void updateTrackList() {
         if (currentPlaylist == null) {
-            tvTracks.setText(getString(R.string.no_tracks));
+            if (tvTracks != null) {
+                tvTracks.setText(getString(R.string.no_tracks));
+            }
+            if (trackAdapter != null) {
+                trackAdapter.updateList(null);
+            }
             return;
         }
         
         List<AudioMixer.TrackData> tracks = currentPlaylist.getTracks();
-        StringBuilder sb = new StringBuilder();
         
-        if (tracks.isEmpty()) {
-            sb.append(getString(R.string.no_tracks));
-        } else {
-            for (int i = 0; i < tracks.size(); i++) {
-                sb.append((i + 1)).append(". ").append(tracks.get(i).name);
-                if (i < tracks.size() - 1) sb.append("\n");
+        if (recyclerTracks != null && trackAdapter != null) {
+            // Use RecyclerView
+            trackAdapter.updateList(tracks);
+            recyclerTracks.setVisibility(tracks.isEmpty() ? View.GONE : View.VISIBLE);
+            if (tvTracks != null) {
+                tvTracks.setVisibility(tracks.isEmpty() ? View.VISIBLE : View.GONE);
+                if (tracks.isEmpty()) {
+                    tvTracks.setText(getString(R.string.no_tracks));
+                }
             }
+        } else if (tvTracks != null) {
+            // Fallback to TextView
+            StringBuilder sb = new StringBuilder();
+            if (tracks.isEmpty()) {
+                sb.append(getString(R.string.no_tracks));
+            } else {
+                for (int i = 0; i < tracks.size(); i++) {
+                    sb.append((i + 1)).append(". ").append(tracks.get(i).name);
+                    if (i < tracks.size() - 1) sb.append("\n");
+                }
+            }
+            tvTracks.setText(sb.toString());
         }
-        
-        tvTracks.setText(sb.toString());
     }
     
     /**
