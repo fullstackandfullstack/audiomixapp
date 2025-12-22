@@ -47,12 +47,22 @@ public class AudioMixer {
     
     // Sequential track playback
     private int currentTrackIndex = 0; // Track which main track is currently playing
+    private boolean waitingForAnnouncementsAfterTrack = false; // For "Play at End Only" - waiting for announcements to finish after a track
     
     // Fade in support
     private float fadeDurationSeconds = 3.0f; // Fade duration in seconds (3 seconds fade in)
     private float currentMainVolumeMultiplier = 0.0f; // Start at 0 so announcement is heard first
     private long fadeStartTime = 0;
     private boolean isFadingIn = false;
+    
+    // Ducking support (fade main track to 15% when announcement plays)
+    private float duckVolume = 0.15f; // 15% volume when ducked
+    private float duckFadeDurationSeconds = 0.5f; // 0.5 seconds fade for ducking
+    private boolean isDucking = false;
+    private boolean isDuckingOut = false; // Fading out (to 15%)
+    private boolean isDuckingIn = false; // Fading back in (to 100%)
+    private long duckStartTime = 0;
+    private float volumeBeforeDuck = 1.0f; // Store volume before ducking
     
     /**
      * Represents a loaded audio track with its PCM data
@@ -288,6 +298,7 @@ public class AudioMixer {
         // Reset sequence tracking
         nextAnnouncementIndex = 0;
         currentTrackIndex = 0; // Start with first track
+        waitingForAnnouncementsAfterTrack = false;
         
         // Reset fade state - start at 0, then fade in over 3 seconds
         currentMainVolumeMultiplier = 0.0f;
@@ -377,6 +388,14 @@ public class AudioMixer {
         fadeStartTime = 0;
         nextAnnouncementIndex = 0;
         currentTrackIndex = 0;
+        waitingForAnnouncementsAfterTrack = false;
+        
+        // Reset ducking state
+        isDucking = false;
+        isDuckingOut = false;
+        isDuckingIn = false;
+        duckStartTime = 0;
+        volumeBeforeDuck = 1.0f;
         
         shouldStop.set(false); // Reset for next play
     }
@@ -408,27 +427,92 @@ public class AudioMixer {
             long currentTime = System.currentTimeMillis();
             long elapsedSeconds = (currentTime - startTime) / 1000;
             
+            // Check if any announcement is currently playing (for ducking)
+            AnnouncementData currentlyPlayingAnnouncement = null;
+            synchronized (announcements) {
+                for (AnnouncementData ann : announcements) {
+                    if (ann.currentPosition > 0 && ann.currentPosition < ann.pcmData.length) {
+                        currentlyPlayingAnnouncement = ann;
+                        break;
+                    }
+                }
+            }
+            
+            // Handle ducking: fade main track to 15% when announcement plays
+            boolean shouldDuck = (currentlyPlayingAnnouncement != null && announcementIntervalSeconds > 0);
+            
             // Calculate fade multiplier for main tracks
-            // Always fade in from 0 to max over 3 seconds when play starts
             float mainVolumeMultiplier = currentMainVolumeMultiplier;
             
             if (isFadingIn) {
+                // Initial fade in from 0 to 100% over 3 seconds
                 float fadeElapsed = (currentTime - fadeStartTime) / 1000.0f;
                 if (fadeElapsed < fadeDurationSeconds) {
-                    // Still fading in - gradually increase from 0 to 1.0 over 3 seconds
                     mainVolumeMultiplier = fadeElapsed / fadeDurationSeconds;
                     mainVolumeMultiplier = Math.min(1.0f, mainVolumeMultiplier);
                 } else {
-                    // Fade in complete - stay at full volume
                     mainVolumeMultiplier = 1.0f;
                     isFadingIn = false;
                 }
+                currentMainVolumeMultiplier = mainVolumeMultiplier;
+            } else if (shouldDuck) {
+                // Announcement is playing - duck main track to 15%
+                if (!isDucking) {
+                    // Start ducking - fade out to 15%
+                    isDucking = true;
+                    isDuckingOut = true;
+                    isDuckingIn = false;
+                    duckStartTime = currentTime;
+                    volumeBeforeDuck = currentMainVolumeMultiplier;
+                }
+                
+                if (isDuckingOut) {
+                    // Fading out to 15% (ducking)
+                    float duckElapsed = (currentTime - duckStartTime) / 1000.0f;
+                    if (duckElapsed < duckFadeDurationSeconds) {
+                        // Fade from current volume to 15%
+                        float progress = duckElapsed / duckFadeDurationSeconds;
+                        mainVolumeMultiplier = volumeBeforeDuck - (volumeBeforeDuck - duckVolume) * progress;
+                    } else {
+                        mainVolumeMultiplier = duckVolume; // Stay at 15%
+                        isDuckingOut = false;
+                    }
+                } else {
+                    // Already ducked - stay at 15%
+                    mainVolumeMultiplier = duckVolume;
+                }
+                currentMainVolumeMultiplier = mainVolumeMultiplier;
+            } else if (isDucking) {
+                // Announcement finished - fade back in to 100%
+                if (isDuckingOut) {
+                    // We were ducking out, now switch to ducking in
+                    isDuckingOut = false;
+                    isDuckingIn = true;
+                    duckStartTime = currentTime;
+                }
+                
+                if (isDuckingIn) {
+                    // Fading back in from 15% to 100%
+                    float duckElapsed = (currentTime - duckStartTime) / 1000.0f;
+                    if (duckElapsed < duckFadeDurationSeconds) {
+                        // Fade from 15% to 100%
+                        float progress = duckElapsed / duckFadeDurationSeconds;
+                        mainVolumeMultiplier = duckVolume + (1.0f - duckVolume) * progress;
+                    } else {
+                        mainVolumeMultiplier = 1.0f; // Back to 100%
+                        isDuckingIn = false;
+                        isDucking = false;
+                    }
+                } else {
+                    mainVolumeMultiplier = 1.0f;
+                    isDucking = false;
+                }
+                currentMainVolumeMultiplier = mainVolumeMultiplier;
             } else {
-                // Fade in complete - stay at full volume
+                // Normal playback - stay at full volume
                 mainVolumeMultiplier = 1.0f;
+                currentMainVolumeMultiplier = mainVolumeMultiplier;
             }
-            
-            currentMainVolumeMultiplier = mainVolumeMultiplier;
             
             // Play tracks sequentially - only play the current track
             TrackData currentTrack = null;
@@ -438,46 +522,51 @@ public class AudioMixer {
                 }
             }
             
-            if (currentTrack != null) {
+            if (currentTrack != null && !waitingForAnnouncementsAfterTrack) {
                 // Mix only the current track
                 mixTrack(currentTrack, mixBuffer, samplesPerBuffer, mainVolume * mainVolumeMultiplier);
                 
                 // Check if current track finished
                 if (currentTrack.currentPosition >= currentTrack.pcmData.length) {
-                    // Move to next track
-                    synchronized (mainTracks) {
-                        currentTrackIndex++;
-                        if (currentTrackIndex >= mainTracks.size()) {
-                            // All tracks finished
-                            if (!playAtEndOnly) {
-                                // Loop back to first track for continuous playback
-                                currentTrackIndex = 0;
-                                // Reset all track positions for next cycle
-                                for (TrackData track : mainTracks) {
-                                    track.currentPosition = 0;
-                                }
-                            } else {
-                                // For "Play at End Only", stop at the end
-                                // Don't reset currentTrackIndex, keep it at mainTracks.size()
-                                // This signals that all tracks have finished
-                            }
-                        } else {
-                            // Reset next track position
-                            if (currentTrackIndex < mainTracks.size()) {
-                                mainTracks.get(currentTrackIndex).currentPosition = 0;
+                    // Track finished
+                    if (playAtEndOnly && !announcements.isEmpty()) {
+                        // "Play at End Only" - play announcements after this track finishes
+                        // Reset announcement sequence for this track
+                        synchronized (announcements) {
+                            nextAnnouncementIndex = 0;
+                            for (AnnouncementData ann : announcements) {
+                                ann.currentPosition = 0;
+                                ann.lastPlayTime = 0;
+                                ann.hasPlayed = false;
                             }
                         }
-                    }
-                }
-            }
-            
-            // Check if any announcement is currently playing
-            AnnouncementData currentlyPlayingAnnouncement = null;
-            synchronized (announcements) {
-                for (AnnouncementData ann : announcements) {
-                    if (ann.currentPosition > 0 && ann.currentPosition < ann.pcmData.length) {
-                        currentlyPlayingAnnouncement = ann;
-                        break; // Only one should be playing at a time
+                        waitingForAnnouncementsAfterTrack = true;
+                        // Don't move to next track yet - wait for announcements to finish
+                    } else {
+                        // Move to next track immediately
+                        synchronized (mainTracks) {
+                            currentTrackIndex++;
+                            if (currentTrackIndex >= mainTracks.size()) {
+                                // All tracks finished
+                                if (!playAtEndOnly) {
+                                    // Loop back to first track for continuous playback
+                                    currentTrackIndex = 0;
+                                    // Reset all track positions for next cycle
+                                    for (TrackData track : mainTracks) {
+                                        track.currentPosition = 0;
+                                    }
+                                } else {
+                                    // For "Play at End Only", stop at the end
+                                    // Don't reset currentTrackIndex, keep it at mainTracks.size()
+                                    // This signals that all tracks have finished
+                                }
+                            } else {
+                                // Reset next track position
+                                if (currentTrackIndex < mainTracks.size()) {
+                                    mainTracks.get(currentTrackIndex).currentPosition = 0;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -500,7 +589,31 @@ public class AudioMixer {
                     synchronized (announcements) {
                         nextAnnouncementIndex++;
                         if (nextAnnouncementIndex >= announcements.size()) {
-                            // All announcements played - reset to start for next cycle
+                            // All announcements played
+                            if (waitingForAnnouncementsAfterTrack) {
+                                // We were waiting for announcements after a track - now move to next track
+                                waitingForAnnouncementsAfterTrack = false;
+                                synchronized (mainTracks) {
+                                    currentTrackIndex++;
+                                    if (currentTrackIndex >= mainTracks.size()) {
+                                        // All tracks finished
+                                        if (!playAtEndOnly) {
+                                            // Loop back to first track for continuous playback
+                                            currentTrackIndex = 0;
+                                            // Reset all track positions for next cycle
+                                            for (TrackData track : mainTracks) {
+                                                track.currentPosition = 0;
+                                            }
+                                        }
+                                    } else {
+                                        // Reset next track position
+                                        if (currentTrackIndex < mainTracks.size()) {
+                                            mainTracks.get(currentTrackIndex).currentPosition = 0;
+                                        }
+                                    }
+                                }
+                            }
+                            // Reset to start for next cycle
                             nextAnnouncementIndex = 0;
                             // Reset all hasPlayed flags for next cycle
                             for (AnnouncementData ann : announcements) {
@@ -515,27 +628,18 @@ public class AudioMixer {
                 int announcementIndexToPlay = -1;
                 
                 if (playAtEndOnly) {
-                    // Play at end only - check if all tracks have finished playing
-                    boolean allTracksFinished = false;
-                    synchronized (mainTracks) {
-                        if (mainTracks.isEmpty()) {
-                            allTracksFinished = false;
-                        } else {
-                            // Check if we've finished all tracks (currentTrackIndex >= size means all done)
-                            if (currentTrackIndex >= mainTracks.size()) {
-                                allTracksFinished = true;
-                            }
-                        }
-                    }
-                    
-                    if (allTracksFinished) {
-                        // All tracks finished - find first announcement that hasn't played yet
+                    // Play at end only - play announcements after each track finishes
+                    // This is triggered when waitingForAnnouncementsAfterTrack is true
+                    if (waitingForAnnouncementsAfterTrack && !announcements.isEmpty()) {
+                        // Find next announcement in sequence that hasn't played yet
                         synchronized (announcements) {
+                            // Play announcements in sequence starting from nextAnnouncementIndex
                             for (int i = 0; i < announcements.size(); i++) {
-                                AnnouncementData ann = announcements.get(i);
+                                int idx = (nextAnnouncementIndex + i) % announcements.size();
+                                AnnouncementData ann = announcements.get(idx);
                                 if (ann.currentPosition == 0 && !ann.hasPlayed) {
                                     shouldStartAnnouncement = true;
-                                    announcementIndexToPlay = i;
+                                    announcementIndexToPlay = idx;
                                     break;
                                 }
                             }

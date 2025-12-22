@@ -61,8 +61,6 @@ public class MainActivity extends AppCompatActivity {
     private SeekBar seekAnnouncementVolume;
     private SeekBar seekAnnouncementInterval;
     private CheckBox checkPlayAtEnd;
-    private TextView tvTracks;
-    private TextView tvStatus;
     private TextView tvIntervalValue;
     private TextView tvSelectedPlaylist;
     private TextView tvMenuPath;
@@ -196,8 +194,6 @@ public class MainActivity extends AppCompatActivity {
         seekAnnouncementVolume = findViewById(R.id.seekAnnouncementVolume);
         seekAnnouncementInterval = findViewById(R.id.seekAnnouncementInterval);
         checkPlayAtEnd = findViewById(R.id.checkPlayAtEnd);
-        tvTracks = findViewById(R.id.tvTracks);
-        tvStatus = findViewById(R.id.tvStatus);
         tvIntervalValue = findViewById(R.id.tvIntervalValue);
         tvSelectedPlaylist = findViewById(R.id.tvSelectedPlaylist);
         tvMenuPath = findViewById(R.id.tvMenuPath);
@@ -238,6 +234,23 @@ public class MainActivity extends AppCompatActivity {
                             audioMixer.play();
                         }
                     }
+                }
+            },
+            (position) -> {
+                // Delete track
+                if (currentPlaylist != null && position >= 0 && position < currentPlaylist.getTracks().size()) {
+                    currentPlaylist.getTracks().remove(position);
+                    trackAdapter.removeItem(position);
+                    playlistManager.savePlaylist(currentPlaylist);
+                    boolean wasPlaying = audioMixer.isPlaying();
+                    if (wasPlaying) {
+                        audioMixer.stop();
+                    }
+                    audioMixer.loadPlaylist(currentPlaylist);
+                    if (wasPlaying && !currentPlaylist.getTracks().isEmpty()) {
+                        audioMixer.play();
+                    }
+                    updateTrackList();
                 }
             }
         );
@@ -287,6 +300,23 @@ public class MainActivity extends AppCompatActivity {
                             audioMixer.play();
                         }
                     }
+                }
+            },
+            (position) -> {
+                // Delete announcement
+                if (currentPlaylist != null && position >= 0 && position < currentPlaylist.getAnnouncements().size()) {
+                    currentPlaylist.getAnnouncements().remove(position);
+                    announcementAdapter.removeItem(position);
+                    playlistManager.savePlaylist(currentPlaylist);
+                    boolean wasPlaying = audioMixer.isPlaying();
+                    if (wasPlaying) {
+                        audioMixer.stop();
+                    }
+                    audioMixer.loadPlaylist(currentPlaylist);
+                    if (wasPlaying) {
+                        audioMixer.play();
+                    }
+                    updateAnnouncementList();
                 }
             }
         );
@@ -384,12 +414,13 @@ public class MainActivity extends AppCompatActivity {
             public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
                 if (fromUser && currentPlaylist != null) {
                     audioMixer.setAnnouncementInterval(progress);
-                    tvIntervalValue.setText(progress + " seconds");
+                    tvIntervalValue.setText(progress + "s");
                     
-                    // Auto-set announcement volume to 75% if interval > 0 and fade enabled
+                    // If interval > 0, automatically uncheck "Play at End Only"
                     if (progress > 0) {
-                        seekAnnouncementVolume.setProgress(75);
-                        audioMixer.setAnnouncementVolume(0.75f);
+                        if (checkPlayAtEnd.isChecked()) {
+                            checkPlayAtEnd.setChecked(false);
+                        }
                     }
                 }
             }
@@ -405,6 +436,13 @@ public class MainActivity extends AppCompatActivity {
         checkPlayAtEnd.setOnCheckedChangeListener((buttonView, isChecked) -> {
             if (currentPlaylist != null) {
                 audioMixer.setPlayAtEndOnly(isChecked);
+                
+                // If "Play at End Only" is checked, set interval to 0
+                if (isChecked) {
+                    seekAnnouncementInterval.setProgress(0);
+                    tvIntervalValue.setText("0s");
+                    audioMixer.setAnnouncementInterval(0);
+                }
             }
         });
         
@@ -676,6 +714,12 @@ public class MainActivity extends AppCompatActivity {
             currentPlaylist = playlist;
         }
         audioMixer.loadPlaylist(currentPlaylist);
+        
+        // Set default interval to 0
+        seekAnnouncementInterval.setProgress(0);
+        tvIntervalValue.setText("0s");
+        audioMixer.setAnnouncementInterval(0);
+        
         updateUI();
         updateStatus("Playlist selected: " + currentPlaylist.getName());
     }
@@ -887,7 +931,6 @@ public class MainActivity extends AppCompatActivity {
             if (tvMenuPath != null) {
                 tvMenuPath.setText("Home > Lists >");
             }
-            tvTracks.setText(getString(R.string.no_tracks));
             announcementAdapter.updateList(null);
         }
     }
@@ -897,9 +940,6 @@ public class MainActivity extends AppCompatActivity {
      */
     private void updateTrackList() {
         if (currentPlaylist == null) {
-            if (tvTracks != null) {
-                tvTracks.setText(getString(R.string.no_tracks));
-            }
             if (trackAdapter != null) {
                 trackAdapter.updateList(null);
             }
@@ -912,24 +952,6 @@ public class MainActivity extends AppCompatActivity {
             // Use RecyclerView
             trackAdapter.updateList(tracks);
             recyclerTracks.setVisibility(tracks.isEmpty() ? View.GONE : View.VISIBLE);
-            if (tvTracks != null) {
-                tvTracks.setVisibility(tracks.isEmpty() ? View.VISIBLE : View.GONE);
-                if (tracks.isEmpty()) {
-                    tvTracks.setText(getString(R.string.no_tracks));
-                }
-            }
-        } else if (tvTracks != null) {
-            // Fallback to TextView
-            StringBuilder sb = new StringBuilder();
-            if (tracks.isEmpty()) {
-                sb.append(getString(R.string.no_tracks));
-            } else {
-                for (int i = 0; i < tracks.size(); i++) {
-                    sb.append((i + 1)).append(". ").append(tracks.get(i).name);
-                    if (i < tracks.size() - 1) sb.append("\n");
-                }
-            }
-            tvTracks.setText(sb.toString());
         }
     }
     
@@ -946,7 +968,8 @@ public class MainActivity extends AppCompatActivity {
      * Update status text
      */
     private void updateStatus(String status) {
-        tvStatus.setText(status);
+        // Status display removed - can use Toast if needed
+        // Toast.makeText(this, status, Toast.LENGTH_SHORT).show();
     }
     
     @Override

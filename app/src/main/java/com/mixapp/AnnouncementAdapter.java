@@ -3,6 +3,7 @@ package com.mixapp;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.ImageButton;
 import android.widget.TextView;
 import androidx.annotation.NonNull;
 import androidx.recyclerview.widget.RecyclerView;
@@ -15,15 +16,21 @@ import java.util.List;
 public class AnnouncementAdapter extends RecyclerView.Adapter<AnnouncementAdapter.ViewHolder> {
     private List<AudioMixer.AnnouncementData> announcements;
     private OnItemMoveListener moveListener;
+    private OnItemDeleteListener deleteListener;
     
     public interface OnItemMoveListener {
         void onItemMove(int fromPosition, int toPosition);
     }
     
-    public AnnouncementAdapter(List<AudioMixer.AnnouncementData> announcements, OnItemMoveListener moveListener) {
+    public interface OnItemDeleteListener {
+        void onItemDelete(int position);
+    }
+    
+    public AnnouncementAdapter(List<AudioMixer.AnnouncementData> announcements, OnItemMoveListener moveListener, OnItemDeleteListener deleteListener) {
         // Create a new list to avoid reference issues
         this.announcements = announcements != null ? new ArrayList<>(announcements) : new ArrayList<>();
         this.moveListener = moveListener;
+        this.deleteListener = deleteListener;
     }
     
     /**
@@ -37,7 +44,7 @@ public class AnnouncementAdapter extends RecyclerView.Adapter<AnnouncementAdapte
     @Override
     public ViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
         View view = LayoutInflater.from(parent.getContext())
-                .inflate(android.R.layout.simple_list_item_1, parent, false);
+                .inflate(R.layout.item_announcement, parent, false);
         return new ViewHolder(view);
     }
     
@@ -46,6 +53,11 @@ public class AnnouncementAdapter extends RecyclerView.Adapter<AnnouncementAdapte
         if (announcements != null && position < announcements.size()) {
             AudioMixer.AnnouncementData ann = announcements.get(position);
             holder.textView.setText((position + 1) + ". " + ann.name);
+            holder.btnDelete.setOnClickListener(v -> {
+                if (deleteListener != null) {
+                    deleteListener.onItemDelete(position);
+                }
+            });
             // Make item view draggable
             holder.itemView.setTag(position);
         }
@@ -98,6 +110,14 @@ public class AnnouncementAdapter extends RecyclerView.Adapter<AnnouncementAdapte
         }
     }
     
+    public void removeItem(int position) {
+        if (position >= 0 && position < announcements.size()) {
+            announcements.remove(position);
+            notifyItemRemoved(position);
+            notifyItemRangeChanged(position, announcements.size());
+        }
+    }
+    
     public void updateList(List<AudioMixer.AnnouncementData> newList) {
         if (newList == null) {
             this.announcements = new ArrayList<>();
@@ -110,10 +130,12 @@ public class AnnouncementAdapter extends RecyclerView.Adapter<AnnouncementAdapte
     
     static class ViewHolder extends RecyclerView.ViewHolder {
         TextView textView;
+        ImageButton btnDelete;
         
         ViewHolder(View itemView) {
             super(itemView);
-            textView = itemView.findViewById(android.R.id.text1);
+            textView = itemView.findViewById(R.id.tvAnnouncementName);
+            btnDelete = itemView.findViewById(R.id.btnDeleteAnnouncement);
         }
     }
 }
