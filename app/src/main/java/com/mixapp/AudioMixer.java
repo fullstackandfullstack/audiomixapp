@@ -49,6 +49,11 @@ public class AudioMixer {
     private int currentTrackIndex = 0; // Track which main track is currently playing
     private boolean waitingForAnnouncementsAfterTrack = false; // For "Play at End Only" - waiting for announcements to finish after a track
     
+    // Playback position tracking
+    private long playbackStartTime = 0; // When playback started (for calculating elapsed time)
+    private long totalSamplesPlayed = 0; // Total samples played across all tracks
+    private long seekOffsetSamples = 0; // Offset for seeking
+    
     // Fade in support
     private float fadeDurationSeconds = 3.0f; // Fade duration in seconds (3 seconds fade in)
     private float currentMainVolumeMultiplier = 0.0f; // Start at 0 so announcement is heard first
@@ -305,6 +310,11 @@ public class AudioMixer {
         isFadingIn = true; // Always fade in when play starts
         fadeStartTime = System.currentTimeMillis();
         
+        // Reset position tracking
+        playbackStartTime = System.currentTimeMillis();
+        totalSamplesPlayed = 0;
+        seekOffsetSamples = 0;
+        
         audioTrack.play();
         
         // Start playback thread
@@ -390,6 +400,11 @@ public class AudioMixer {
         currentTrackIndex = 0;
         waitingForAnnouncementsAfterTrack = false;
         
+        // Reset position tracking
+        playbackStartTime = 0;
+        totalSamplesPlayed = 0;
+        seekOffsetSamples = 0;
+        
         // Reset ducking state
         isDucking = false;
         isDuckingOut = false;
@@ -407,7 +422,6 @@ public class AudioMixer {
         int samplesPerBuffer = BUFFER_SIZE / (BYTES_PER_SAMPLE * CHANNELS);
         short[] mixBuffer = new short[samplesPerBuffer * CHANNELS];
         long startTime = System.currentTimeMillis();
-        long totalSamplesPlayed = 0;
         
         // Track total duration of all tracks for "play at end" detection
         long totalTrackDurationSamples = 0;
@@ -720,7 +734,7 @@ public class AudioMixer {
                 break;
             }
             
-            totalSamplesPlayed += samplesPerBuffer;
+            // Track position is updated via currentPosition in TrackData
         }
         
         if (audioTrack != null) {
@@ -821,6 +835,124 @@ public class AudioMixer {
         if (audioTrack != null) {
             audioTrack.release();
             audioTrack = null;
+        }
+    }
+    
+    /**
+     * Get current track position in milliseconds
+     */
+    public long getCurrentTrackPosition() {
+        synchronized (mainTracks) {
+            if (mainTracks.isEmpty() || currentTrackIndex >= mainTracks.size()) {
+                return 0;
+            }
+            TrackData currentTrack = mainTracks.get(currentTrackIndex);
+            long positionSamples = currentTrack.currentPosition / CHANNELS;
+            return (positionSamples * 1000) / SAMPLE_RATE;
+        }
+    }
+    
+    /**
+     * Get current track duration in milliseconds
+     */
+    public long getCurrentTrackDuration() {
+        synchronized (mainTracks) {
+            if (mainTracks.isEmpty() || currentTrackIndex >= mainTracks.size()) {
+                return 0;
+            }
+            TrackData currentTrack = mainTracks.get(currentTrackIndex);
+            long durationSamples = currentTrack.sampleCount;
+            return (durationSamples * 1000) / SAMPLE_RATE;
+        }
+    }
+    
+    /**
+     * Get current playlist position in milliseconds (total elapsed time)
+     */
+    public long getCurrentPlaylistPosition() {
+        synchronized (mainTracks) {
+            if (mainTracks.isEmpty()) {
+                return 0;
+            }
+            long totalSamples = 0;
+            for (int i = 0; i < currentTrackIndex && i < mainTracks.size(); i++) {
+                totalSamples += mainTracks.get(i).sampleCount;
+            }
+            if (currentTrackIndex < mainTracks.size()) {
+                TrackData currentTrack = mainTracks.get(currentTrackIndex);
+                totalSamples += (currentTrack.currentPosition / CHANNELS);
+            }
+            return (totalSamples * 1000) / SAMPLE_RATE;
+        }
+    }
+    
+    /**
+     * Get total playlist duration in milliseconds
+     */
+    public long getPlaylistDuration() {
+        synchronized (mainTracks) {
+            if (mainTracks.isEmpty()) {
+                return 0;
+            }
+            long totalSamples = 0;
+            for (TrackData track : mainTracks) {
+                totalSamples += track.sampleCount;
+            }
+            return (totalSamples * 1000) / SAMPLE_RATE;
+        }
+    }
+    
+    /**
+     * Seek to position in current track (milliseconds)
+     */
+    public void seekToTrackPosition(long positionMs) {
+        synchronized (mainTracks) {
+            if (mainTracks.isEmpty() || currentTrackIndex >= mainTracks.size()) {
+                return;
+            }
+            TrackData currentTrack = mainTracks.get(currentTrackIndex);
+            long positionSamples = (positionMs * SAMPLE_RATE) / 1000;
+            positionSamples = Math.max(0, Math.min(positionSamples, currentTrack.sampleCount));
+            currentTrack.currentPosition = (int) (positionSamples * CHANNELS);
+        }
+    }
+    
+    /**
+     * Seek to position in playlist (milliseconds)
+     */
+    public void seekToPlaylistPosition(long positionMs) {
+        synchronized (mainTracks) {
+            if (mainTracks.isEmpty()) {
+                return;
+            }
+            long positionSamples = (positionMs * SAMPLE_RATE) / 1000;
+            long accumulatedSamples = 0;
+            
+            // Find which track contains this position
+            for (int i = 0; i < mainTracks.size(); i++) {
+                TrackData track = mainTracks.get(i);
+                long trackSamples = track.sampleCount;
+                
+                if (positionSamples < accumulatedSamples + trackSamples) {
+                    // Position is in this track
+                    currentTrackIndex = i;
+                    long offsetInTrack = positionSamples - accumulatedSamples;
+                    track.currentPosition = (int) (offsetInTrack * CHANNELS);
+                    // Reset all subsequent tracks
+                    for (int j = i + 1; j < mainTracks.size(); j++) {
+                        mainTracks.get(j).currentPosition = 0;
+                    }
+                    return;
+                }
+                accumulatedSamples += trackSamples;
+            }
+            
+            // Position is beyond all tracks - go to end
+            currentTrackIndex = mainTracks.size() - 1;
+            if (currentTrackIndex >= 0) {
+                TrackData lastTrack = mainTracks.get(currentTrackIndex);
+                lastTrack.currentPosition = lastTrack.pcmData.length;
+            }
         }
     }
 }

@@ -3,6 +3,7 @@ package com.mixapp;
 import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.ProgressDialog;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.pm.PackageManager;
@@ -12,7 +13,12 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.InputType;
+import android.text.SpannableString;
+import android.text.Spanned;
+import android.text.style.ClickableSpan;
+import android.text.style.ForegroundColorSpan;
 import android.util.Log;
+import android.view.View;
 import android.view.MenuItem;
 import android.view.View;
 import android.widget.Button;
@@ -60,6 +66,12 @@ public class MainActivity extends AppCompatActivity {
     private SeekBar seekMainVolume;
     private SeekBar seekAnnouncementVolume;
     private SeekBar seekAnnouncementInterval;
+    private SeekBar seekTrackProgress;
+    private SeekBar seekPlaylistProgress;
+    private TextView tvTrackProgress;
+    private TextView tvTrackDuration;
+    private TextView tvPlaylistProgress;
+    private TextView tvPlaylistDuration;
     private CheckBox checkPlayAtEnd;
     private TextView tvIntervalValue;
     private TextView tvSelectedPlaylist;
@@ -76,6 +88,7 @@ public class MainActivity extends AppCompatActivity {
     private View homeView;
     private RecyclerView recyclerPlaylists;
     private TextView tvEmptyState;
+    private ProgressDialog loadingProgressDialog;
     
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -110,7 +123,7 @@ public class MainActivity extends AppCompatActivity {
         tvEmptyState = findViewById(R.id.tvEmptyState);
         ImageButton btnMenu = findViewById(R.id.btnMenu);
         
-        tvMenuPath.setText("Home");
+        setClickableBreadcrumb("Home", null);
         
         // Setup playlist RecyclerView
         playlistAdapter = new PlaylistAdapter(
@@ -193,6 +206,12 @@ public class MainActivity extends AppCompatActivity {
         seekMainVolume = findViewById(R.id.seekMainVolume);
         seekAnnouncementVolume = findViewById(R.id.seekAnnouncementVolume);
         seekAnnouncementInterval = findViewById(R.id.seekAnnouncementInterval);
+        seekTrackProgress = findViewById(R.id.seekTrackProgress);
+        seekPlaylistProgress = findViewById(R.id.seekPlaylistProgress);
+        tvTrackProgress = findViewById(R.id.tvTrackProgress);
+        tvTrackDuration = findViewById(R.id.tvTrackDuration);
+        tvPlaylistProgress = findViewById(R.id.tvPlaylistProgress);
+        tvPlaylistDuration = findViewById(R.id.tvPlaylistDuration);
         checkPlayAtEnd = findViewById(R.id.checkPlayAtEnd);
         tvIntervalValue = findViewById(R.id.tvIntervalValue);
         tvSelectedPlaylist = findViewById(R.id.tvSelectedPlaylist);
@@ -448,6 +467,136 @@ public class MainActivity extends AppCompatActivity {
         
         // Click on selected playlist to change it
         tvSelectedPlaylist.setOnClickListener(v -> showPlaylistSelectionDialog(true));
+        
+        // Track progress seekbar
+        seekTrackProgress.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            private boolean wasPlaying = false;
+            
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                if (fromUser && currentPlaylist != null) {
+                    // Update time display while seeking
+                    long trackDuration = audioMixer.getCurrentTrackDuration();
+                    if (trackDuration > 0) {
+                        long seekPosition = (long) (progress / 100.0 * trackDuration);
+                        tvTrackProgress.setText(formatTime(seekPosition));
+                    }
+                }
+            }
+            
+            @Override
+            public void onStartTrackingTouch(SeekBar seekBar) {
+                wasPlaying = audioMixer.isPlaying();
+                if (wasPlaying) {
+                    audioMixer.pause();
+                }
+            }
+            
+            @Override
+            public void onStopTrackingTouch(SeekBar seekBar) {
+                if (currentPlaylist != null) {
+                    int progress = seekBar.getProgress();
+                    long trackDuration = audioMixer.getCurrentTrackDuration();
+                    if (trackDuration > 0) {
+                        long seekPosition = (long) (progress / 100.0 * trackDuration);
+                        audioMixer.seekToTrackPosition(seekPosition);
+                        if (wasPlaying) {
+                            audioMixer.play();
+                        }
+                    }
+                }
+            }
+        });
+        
+        // Playlist progress seekbar
+        seekPlaylistProgress.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            private boolean wasPlaying = false;
+            
+            @Override
+            public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                if (fromUser && currentPlaylist != null) {
+                    // Update time display while seeking
+                    long playlistDuration = audioMixer.getPlaylistDuration();
+                    if (playlistDuration > 0) {
+                        long seekPosition = (long) (progress / 100.0 * playlistDuration);
+                        tvPlaylistProgress.setText(formatTime(seekPosition));
+                    }
+                }
+            }
+            
+            @Override
+            public void onStartTrackingTouch(SeekBar seekBar) {
+                wasPlaying = audioMixer.isPlaying();
+                if (wasPlaying) {
+                    audioMixer.pause();
+                }
+            }
+            
+            @Override
+            public void onStopTrackingTouch(SeekBar seekBar) {
+                if (currentPlaylist != null) {
+                    int progress = seekBar.getProgress();
+                    long playlistDuration = audioMixer.getPlaylistDuration();
+                    if (playlistDuration > 0) {
+                        long seekPosition = (long) (progress / 100.0 * playlistDuration);
+                        audioMixer.seekToPlaylistPosition(seekPosition);
+                        if (wasPlaying) {
+                            audioMixer.play();
+                        }
+                    }
+                }
+            }
+        });
+        
+        // Start progress update handler
+        startProgressUpdater();
+    }
+    
+    /**
+     * Format milliseconds to MM:SS
+     */
+    private String formatTime(long milliseconds) {
+        long seconds = milliseconds / 1000;
+        long minutes = seconds / 60;
+        seconds = seconds % 60;
+        return String.format("%d:%02d", minutes, seconds);
+    }
+    
+    /**
+     * Start updating progress bars during playback
+     */
+    private void startProgressUpdater() {
+        Handler progressHandler = new Handler(Looper.getMainLooper());
+        Runnable progressRunnable = new Runnable() {
+            @Override
+            public void run() {
+                if (audioMixer != null && currentPlaylist != null) {
+                    if (audioMixer.isPlaying()) {
+                        // Update track progress
+                        long trackPosition = audioMixer.getCurrentTrackPosition();
+                        long trackDuration = audioMixer.getCurrentTrackDuration();
+                        if (trackDuration > 0) {
+                            int trackProgress = (int) (trackPosition * 100 / trackDuration);
+                            seekTrackProgress.setProgress(trackProgress);
+                            tvTrackProgress.setText(formatTime(trackPosition));
+                            tvTrackDuration.setText(formatTime(trackDuration));
+                        }
+                        
+                        // Update playlist progress
+                        long playlistPosition = audioMixer.getCurrentPlaylistPosition();
+                        long playlistDuration = audioMixer.getPlaylistDuration();
+                        if (playlistDuration > 0) {
+                            int playlistProgress = (int) (playlistPosition * 100 / playlistDuration);
+                            seekPlaylistProgress.setProgress(playlistProgress);
+                            tvPlaylistProgress.setText(formatTime(playlistPosition));
+                            tvPlaylistDuration.setText(formatTime(playlistDuration));
+                        }
+                    }
+                }
+                progressHandler.postDelayed(this, 100); // Update every 100ms
+            }
+        };
+        progressHandler.post(progressRunnable);
     }
     
     /**
@@ -792,9 +941,22 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
         
+        // Show progress dialog for large file loading
+        mainHandler.post(() -> {
+            if (loadingProgressDialog != null && loadingProgressDialog.isShowing()) {
+                loadingProgressDialog.dismiss();
+            }
+            loadingProgressDialog = new ProgressDialog(this);
+            loadingProgressDialog.setMessage("Loading audio file...\nThis may take a while for large files.");
+            loadingProgressDialog.setIndeterminate(true);
+            loadingProgressDialog.setCancelable(false);
+            loadingProgressDialog.show();
+        });
+        
         updateStatus("Loading audio file...");
         
         new Thread(() -> {
+            File tempFile = null;
             try {
                 // Extract original filename from URI
                 String fileName = getFileNameFromUri(uri);
@@ -810,7 +972,7 @@ public class MainActivity extends AppCompatActivity {
                 }
                 
                 // Create temp file with original extension
-                File tempFile = File.createTempFile("audio_", extension, getCacheDir());
+                tempFile = File.createTempFile("audio_", extension, getCacheDir());
                 tempFile.deleteOnExit();
                 
                 InputStream inputStream = getContentResolver().openInputStream(uri);
@@ -818,32 +980,66 @@ public class MainActivity extends AppCompatActivity {
                     throw new Exception("Could not open file stream");
                 }
                 
+                // Copy file and check size
                 FileOutputStream outputStream = new FileOutputStream(tempFile);
                 byte[] buffer = new byte[8192];
                 int bytesRead;
+                long fileSize = 0;
                 while ((bytesRead = inputStream.read(buffer)) != -1) {
                     outputStream.write(buffer, 0, bytesRead);
+                    fileSize += bytesRead;
                 }
                 outputStream.close();
                 inputStream.close();
                 
+                // Check file size - warn if very large (over 50MB)
+                long fileSizeMB = fileSize / (1024 * 1024);
+                if (fileSizeMB > 50) {
+                    Log.w(TAG, "Large file detected: " + fileSizeMB + " MB");
+                    mainHandler.post(() -> {
+                        Toast.makeText(this, "Large file detected (" + fileSizeMB + " MB). Decoding may take a while...", 
+                                Toast.LENGTH_LONG).show();
+                    });
+                }
+                
+                // Update progress message
+                mainHandler.post(() -> {
+                    if (loadingProgressDialog != null && loadingProgressDialog.isShowing()) {
+                        loadingProgressDialog.setMessage("Decoding audio file...\nFile size: " + fileSizeMB + " MB\nThis may take a while...");
+                    }
+                });
+                
+                // Decode audio file
+                AudioMixer.TrackData track;
+                try {
+                    track = audioMixer.loadAudioFile(tempFile, fileName);
+                } catch (OutOfMemoryError e) {
+                    Log.e(TAG, "Out of memory while decoding file", e);
+                    throw new Exception("File is too large to load. Please use a smaller file or split it into smaller parts.");
+                }
+                
+                // Add to playlist
                 if (isMainTrack) {
-                    AudioMixer.TrackData track = audioMixer.loadAudioFile(tempFile, fileName);
                     currentPlaylist.addTrack(track);
                     playlistManager.savePlaylist(currentPlaylist); // Save after adding
                     mainHandler.post(() -> {
+                        if (loadingProgressDialog != null && loadingProgressDialog.isShowing()) {
+                            loadingProgressDialog.dismiss();
+                        }
                         updateStatus("Track added: " + track.name);
                         updateUI();
                         Toast.makeText(this, "Track added to " + currentPlaylist.getName(), 
                                 Toast.LENGTH_SHORT).show();
                     });
                 } else {
-                    AudioMixer.TrackData track = audioMixer.loadAudioFile(tempFile, fileName);
                     AudioMixer.AnnouncementData announcement = 
                         new AudioMixer.AnnouncementData(track.name, track.pcmData);
                     currentPlaylist.addAnnouncement(announcement);
                     playlistManager.savePlaylist(currentPlaylist); // Save after adding
                     mainHandler.post(() -> {
+                        if (loadingProgressDialog != null && loadingProgressDialog.isShowing()) {
+                            loadingProgressDialog.dismiss();
+                        }
                         updateStatus("Announcement added: " + announcement.name);
                         updateUI();
                         Toast.makeText(this, "Announcement added to " + currentPlaylist.getName(), 
@@ -856,13 +1052,57 @@ public class MainActivity extends AppCompatActivity {
                 
                 // Reload playlist to mixer
                 audioMixer.loadPlaylist(currentPlaylist);
-                tempFile.delete();
                 
-            } catch (Exception e) {
+            } catch (OutOfMemoryError e) {
+                Log.e(TAG, "Out of memory error", e);
                 mainHandler.post(() -> {
-                    updateStatus("Error loading file");
-                    Toast.makeText(this, "Error loading file: " + e.getMessage(), 
+                    if (loadingProgressDialog != null && loadingProgressDialog.isShowing()) {
+                        loadingProgressDialog.dismiss();
+                    }
+                    updateStatus("Error: File too large");
+                    Toast.makeText(this, "File is too large to load. The app ran out of memory.\nPlease use a smaller file.", 
                             Toast.LENGTH_LONG).show();
+                });
+            } catch (Exception e) {
+                Log.e(TAG, "Error loading file", e);
+                mainHandler.post(() -> {
+                    if (loadingProgressDialog != null && loadingProgressDialog.isShowing()) {
+                        loadingProgressDialog.dismiss();
+                    }
+                    updateStatus("Error loading file");
+                    String errorMsg = e.getMessage();
+                    if (errorMsg == null || errorMsg.isEmpty()) {
+                        errorMsg = "Unknown error occurred";
+                    }
+                    Toast.makeText(this, "Error loading file: " + errorMsg, 
+                            Toast.LENGTH_LONG).show();
+                });
+            } catch (Throwable t) {
+                // Catch any other errors (including OutOfMemoryError if not caught above)
+                Log.e(TAG, "Unexpected error loading file", t);
+                mainHandler.post(() -> {
+                    if (loadingProgressDialog != null && loadingProgressDialog.isShowing()) {
+                        loadingProgressDialog.dismiss();
+                    }
+                    updateStatus("Error loading file");
+                    Toast.makeText(this, "Unexpected error: " + t.getClass().getSimpleName() + "\n" + 
+                            (t.getMessage() != null ? t.getMessage() : ""), 
+                            Toast.LENGTH_LONG).show();
+                });
+            } finally {
+                // Clean up temp file
+                if (tempFile != null && tempFile.exists()) {
+                    try {
+                        tempFile.delete();
+                    } catch (Exception e) {
+                        Log.w(TAG, "Could not delete temp file", e);
+                    }
+                }
+                // Ensure progress dialog is dismissed
+                mainHandler.post(() -> {
+                    if (loadingProgressDialog != null && loadingProgressDialog.isShowing()) {
+                        loadingProgressDialog.dismiss();
+                    }
                 });
             }
         }).start();
@@ -903,6 +1143,47 @@ public class MainActivity extends AppCompatActivity {
     }
     
     /**
+     * Set clickable breadcrumb navigation text
+     */
+    private void setClickableBreadcrumb(String text, String playlistName) {
+        SpannableString spannable = new SpannableString(text);
+        
+        // Make "Home" clickable
+        int homeStart = text.indexOf("Home");
+        if (homeStart >= 0) {
+            int homeEnd = homeStart + "Home".length();
+            ClickableSpan homeClickable = new ClickableSpan() {
+                @Override
+                public void onClick(View widget) {
+                    showHomeScreen();
+                }
+            };
+            spannable.setSpan(homeClickable, homeStart, homeEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            spannable.setSpan(new ForegroundColorSpan(0xFFFFFFFF), homeStart, homeEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        }
+        
+        // Make "Lists" clickable
+        int listsStart = text.indexOf("Lists");
+        if (listsStart >= 0) {
+            int listsEnd = listsStart + "Lists".length();
+            ClickableSpan listsClickable = new ClickableSpan() {
+                @Override
+                public void onClick(View widget) {
+                    if (!isHomeScreen) {
+                        // Show playlist selection dialog
+                        showPlaylistSelectionDialog(false);
+                    }
+                }
+            };
+            spannable.setSpan(listsClickable, listsStart, listsEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+            spannable.setSpan(new ForegroundColorSpan(0xFFFFFFFF), listsStart, listsEnd, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        }
+        
+        tvMenuPath.setText(spannable);
+        tvMenuPath.setMovementMethod(android.text.method.LinkMovementMethod.getInstance());
+    }
+    
+    /**
      * Update UI based on current playlist state
      */
     private void updateUI() {
@@ -916,20 +1197,22 @@ public class MainActivity extends AppCompatActivity {
         seekMainVolume.setEnabled(hasPlaylist);
         seekAnnouncementVolume.setEnabled(hasPlaylist);
         seekAnnouncementInterval.setEnabled(hasPlaylist);
+        seekTrackProgress.setEnabled(hasPlaylist);
+        seekPlaylistProgress.setEnabled(hasPlaylist);
         checkPlayAtEnd.setEnabled(hasPlaylist);
         
         // Update playlist display
         if (currentPlaylist != null) {
             tvSelectedPlaylist.setText(getString(R.string.selected_playlist, currentPlaylist.getName()));
             if (tvMenuPath != null) {
-                tvMenuPath.setText("Home > Lists > " + currentPlaylist.getName());
+                setClickableBreadcrumb("Home > Lists > " + currentPlaylist.getName(), currentPlaylist.getName());
             }
             updateTrackList();
             updateAnnouncementList();
         } else {
             tvSelectedPlaylist.setText(getString(R.string.no_playlist_selected));
             if (tvMenuPath != null) {
-                tvMenuPath.setText("Home > Lists >");
+                setClickableBreadcrumb("Home > Lists >", null);
             }
             announcementAdapter.updateList(null);
         }

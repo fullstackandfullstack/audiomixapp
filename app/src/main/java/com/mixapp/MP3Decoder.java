@@ -145,24 +145,65 @@ public class MP3Decoder {
                 totalSamples += chunk.length;
             }
             
-            short[] allSamples = new short[totalSamples];
+            Log.d(TAG, "Total samples to allocate: " + totalSamples + " (" + 
+                  (totalSamples * 2L / (1024 * 1024)) + " MB)");
+            
+            // Check if we're about to allocate too much memory
+            long estimatedMemoryMB = (totalSamples * 2L) / (1024 * 1024);
+            if (estimatedMemoryMB > 200) {
+                Log.w(TAG, "Large memory allocation: " + estimatedMemoryMB + " MB");
+            }
+            
+            short[] allSamples;
+            try {
+                allSamples = new short[totalSamples];
+            } catch (OutOfMemoryError e) {
+                Log.e(TAG, "Out of memory allocating PCM array: " + totalSamples + " samples (" + 
+                      estimatedMemoryMB + " MB)", e);
+                // Clear chunks to free memory before throwing
+                decodedChunks.clear();
+                System.gc();
+                throw new IOException("File is too large. Out of memory while decoding. Please use a smaller file.");
+            }
+            
             int offset = 0;
             for (short[] chunk : decodedChunks) {
                 System.arraycopy(chunk, 0, allSamples, offset, chunk.length);
                 offset += chunk.length;
             }
             
+            // Clear chunks to free memory
+            decodedChunks.clear();
+            
             // Resample to 44.1kHz if needed
             if (sampleRate != 44100) {
-                allSamples = resample(allSamples, sampleRate, 44100, channelCount);
+                try {
+                    allSamples = resample(allSamples, sampleRate, 44100, channelCount);
+                } catch (OutOfMemoryError e) {
+                    Log.e(TAG, "Out of memory during resampling", e);
+                    System.gc();
+                    throw new IOException("File is too large. Out of memory during resampling. Please use a smaller file.");
+                }
             }
             
             // Convert to stereo if needed
             if (channelCount == 1) {
-                allSamples = monoToStereo(allSamples);
+                try {
+                    allSamples = monoToStereo(allSamples);
+                } catch (OutOfMemoryError e) {
+                    Log.e(TAG, "Out of memory during mono to stereo conversion", e);
+                    System.gc();
+                    throw new IOException("File is too large. Out of memory during conversion. Please use a smaller file.");
+                }
             } else if (channelCount > 2) {
                 // Take first two channels
-                allSamples = extractStereo(allSamples, channelCount);
+                try {
+                    allSamples = extractStereo(allSamples, channelCount);
+                } catch (OutOfMemoryError e) {
+                    Log.e(TAG, "Out of memory during stereo extraction", e);
+                    System.gc();
+                    throw new IOException("File is too large. Out of memory during conversion. Please use a smaller file.");
+                }
             }
             
             Log.d(TAG, "Decoded " + allSamples.length + " samples");
