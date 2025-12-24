@@ -1009,10 +1009,27 @@ public class MainActivity extends AppCompatActivity {
                     }
                 });
                 
-                // Decode audio file
+                // Create PCM output file path
+                File playlistDir = new File(getFilesDir(), "playlists");
+                if (!playlistDir.exists()) {
+                    playlistDir.mkdirs();
+                }
+                
+                // Generate unique filename for PCM data
+                String pcmFileName;
+                if (isMainTrack) {
+                    int trackIndex = currentPlaylist.getTracks().size();
+                    pcmFileName = currentPlaylist.getId() + "_track_" + trackIndex + ".pcm";
+                } else {
+                    int annIndex = currentPlaylist.getAnnouncements().size();
+                    pcmFileName = currentPlaylist.getId() + "_ann_" + annIndex + ".pcm";
+                }
+                File pcmOutputFile = new File(playlistDir, pcmFileName);
+                
+                // Decode audio file and save PCM to disk
                 AudioMixer.TrackData track;
                 try {
-                    track = audioMixer.loadAudioFile(tempFile, fileName);
+                    track = audioMixer.loadAudioFile(tempFile, pcmOutputFile, fileName);
                 } catch (OutOfMemoryError e) {
                     Log.e(TAG, "Out of memory while decoding file", e);
                     throw new Exception("File is too large to load. Please use a smaller file or split it into smaller parts.");
@@ -1032,8 +1049,9 @@ public class MainActivity extends AppCompatActivity {
                                 Toast.LENGTH_SHORT).show();
                     });
                 } else {
+                    // Create announcement with file reference (same file as track)
                     AudioMixer.AnnouncementData announcement = 
-                        new AudioMixer.AnnouncementData(track.name, track.pcmData);
+                        new AudioMixer.AnnouncementData(track.name, track.pcmFile, track.sampleCount);
                     currentPlaylist.addAnnouncement(announcement);
                     playlistManager.savePlaylist(currentPlaylist); // Save after adding
                     mainHandler.post(() -> {

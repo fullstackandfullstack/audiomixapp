@@ -109,31 +109,29 @@ public class PlaylistManager {
             json.put("id", playlist.getId());
             json.put("name", playlist.getName());
             
-            // Save tracks
+            // Save tracks (just save file references - PCM files already exist on disk)
             JSONArray tracksArray = new JSONArray();
             for (int i = 0; i < playlist.getTracks().size(); i++) {
                 AudioMixer.TrackData track = playlist.getTracks().get(i);
                 JSONObject trackJson = new JSONObject();
                 trackJson.put("name", track.name);
                 trackJson.put("index", i);
-                // Save PCM data to separate file
-                String trackFileName = playlist.getId() + "_track_" + i + ".pcm";
-                savePCMData(track.pcmData, trackFileName);
+                // Get filename from the PCM file path
+                String trackFileName = track.pcmFile.getName();
                 trackJson.put("dataFile", trackFileName);
                 tracksArray.put(trackJson);
             }
             json.put("tracks", tracksArray);
             
-            // Save announcements
+            // Save announcements (just save file references - PCM files already exist on disk)
             JSONArray announcementsArray = new JSONArray();
             for (int i = 0; i < playlist.getAnnouncements().size(); i++) {
                 AudioMixer.AnnouncementData ann = playlist.getAnnouncements().get(i);
                 JSONObject annJson = new JSONObject();
                 annJson.put("name", ann.name);
                 annJson.put("index", i);
-                // Save PCM data to separate file
-                String annFileName = playlist.getId() + "_ann_" + i + ".pcm";
-                savePCMData(ann.pcmData, annFileName);
+                // Get filename from the PCM file path
+                String annFileName = ann.pcmFile.getName();
                 annJson.put("dataFile", annFileName);
                 announcementsArray.put(annJson);
             }
@@ -176,25 +174,35 @@ public class PlaylistManager {
             String name = json.getString("name");
             Playlist playlist = new Playlist(name, id);
             
-            // Load tracks
+            // Load tracks (file references only, not loading PCM data into memory)
             JSONArray tracksArray = json.getJSONArray("tracks");
             for (int i = 0; i < tracksArray.length(); i++) {
                 JSONObject trackJson = tracksArray.getJSONObject(i);
                 String trackName = trackJson.getString("name");
                 String dataFile = trackJson.getString("dataFile");
-                short[] pcmData = loadPCMData(dataFile);
-                AudioMixer.TrackData track = new AudioMixer.TrackData(trackName, pcmData);
+                File pcmFile = new File(getPlaylistDirectory(), dataFile);
+                
+                // Calculate sample count from file size (16-bit stereo = 4 bytes per sample)
+                long fileSizeBytes = pcmFile.exists() ? pcmFile.length() : 0;
+                long sampleCount = fileSizeBytes / (2 * 2); // 2 bytes per sample * 2 channels
+                
+                AudioMixer.TrackData track = new AudioMixer.TrackData(trackName, pcmFile, sampleCount);
                 playlist.addTrack(track);
             }
             
-            // Load announcements
+            // Load announcements (file references only, not loading PCM data into memory)
             JSONArray announcementsArray = json.getJSONArray("announcements");
             for (int i = 0; i < announcementsArray.length(); i++) {
                 JSONObject annJson = announcementsArray.getJSONObject(i);
                 String annName = annJson.getString("name");
                 String dataFile = annJson.getString("dataFile");
-                short[] pcmData = loadPCMData(dataFile);
-                AudioMixer.AnnouncementData ann = new AudioMixer.AnnouncementData(annName, pcmData);
+                File pcmFile = new File(getPlaylistDirectory(), dataFile);
+                
+                // Calculate sample count from file size (16-bit stereo = 4 bytes per sample)
+                long fileSizeBytes = pcmFile.exists() ? pcmFile.length() : 0;
+                long sampleCount = fileSizeBytes / (2 * 2); // 2 bytes per sample * 2 channels
+                
+                AudioMixer.AnnouncementData ann = new AudioMixer.AnnouncementData(annName, pcmFile, sampleCount);
                 playlist.addAnnouncement(ann);
             }
             

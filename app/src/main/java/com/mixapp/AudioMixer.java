@@ -70,37 +70,87 @@ public class AudioMixer {
     private float volumeBeforeDuck = 1.0f; // Store volume before ducking
     
     /**
-     * Represents a loaded audio track with its PCM data
+     * Represents a loaded audio track with file-based PCM data streaming
      */
     public static class TrackData {
         String name;
-        short[] pcmData; // 16-bit PCM samples (interleaved stereo)
-        int sampleCount;
-        int currentPosition = 0;
+        File pcmFile; // File path to PCM data on disk
+        long sampleCount;
+        long currentPosition = 0; // Current position in samples
         boolean isLooping = true; // Main tracks loop continuously
+        private PCMFileStream stream; // Lazy-loaded stream
         
-        TrackData(String name, short[] pcmData) {
+        TrackData(String name, File pcmFile, long sampleCount) {
             this.name = name;
-            this.pcmData = pcmData;
-            this.sampleCount = pcmData.length / CHANNELS; // Divide by 2 for stereo
+            this.pcmFile = pcmFile;
+            this.sampleCount = sampleCount;
+        }
+        
+        /**
+         * Get or create the PCM file stream for this track
+         */
+        synchronized PCMFileStream getStream() throws IOException {
+            if (stream == null || stream.isClosed()) {
+                stream = new PCMFileStream(pcmFile, SAMPLE_RATE, CHANNELS);
+            }
+            return stream;
+        }
+        
+        /**
+         * Close the stream (call when done playing)
+         */
+        synchronized void closeStream() {
+            if (stream != null) {
+                try {
+                    stream.close();
+                } catch (IOException e) {
+                    Log.e(TAG, "Error closing stream for " + name, e);
+                }
+                stream = null;
+            }
         }
     }
     
     /**
-     * Represents an announcement clip with timing information
+     * Represents an announcement clip with file-based PCM data streaming
      */
     public static class AnnouncementData {
         String name;
-        short[] pcmData;
-        int sampleCount;
-        int currentPosition = 0;
+        File pcmFile; // File path to PCM data on disk
+        long sampleCount;
+        long currentPosition = 0; // Current position in samples
         long lastPlayTime = 0;
         boolean hasPlayed = false;
+        private PCMFileStream stream; // Lazy-loaded stream
         
-        AnnouncementData(String name, short[] pcmData) {
+        AnnouncementData(String name, File pcmFile, long sampleCount) {
             this.name = name;
-            this.pcmData = pcmData;
-            this.sampleCount = pcmData.length / CHANNELS;
+            this.pcmFile = pcmFile;
+            this.sampleCount = sampleCount;
+        }
+        
+        /**
+         * Get or create the PCM file stream for this announcement
+         */
+        synchronized PCMFileStream getStream() throws IOException {
+            if (stream == null || stream.isClosed()) {
+                stream = new PCMFileStream(pcmFile, SAMPLE_RATE, CHANNELS);
+            }
+            return stream;
+        }
+        
+        /**
+         * Close the stream (call when done playing)
+         */
+        synchronized void closeStream() {
+            if (stream != null) {
+                try {
+                    stream.close();
+                } catch (IOException e) {
+                    Log.e(TAG, "Error closing stream for " + name, e);
+                }
+                stream = null;
+            }
         }
     }
     
@@ -134,22 +184,43 @@ public class AudioMixer {
     }
     
     /**
-     * Load an audio file (MP3, WAV, etc.) and convert to PCM data using MediaCodec
+     * Load an audio file (MP3, WAV, etc.) and convert to PCM data, saving to disk
+     * @param file The audio file to decode
+     * @param pcmOutputFile Where to save the decoded PCM data
+     * @param displayName Display name for the track
+     * @return TrackData with file reference (not loaded into memory)
      */
-    public TrackData loadAudioFile(File file) throws IOException {
-        return loadAudioFile(file, file.getName());
+    public TrackData loadAudioFile(File file, File pcmOutputFile, String displayName) throws IOException {
+        Log.d(TAG, "Loading audio file: " + displayName + " (decoding directly to disk)");
+        
+        // Decode audio directly to disk (streaming, low memory)
+        MP3Decoder.DecodeResult result = MP3Decoder.decodeAudioToFile(file, pcmOutputFile);
+        
+        // Return TrackData with file reference (not loaded into memory)
+        return new TrackData(displayName, pcmOutputFile, result.sampleCount);
     }
     
     /**
-     * Load an audio file with a custom name
+     * Save PCM data to a file in raw binary format (little-endian 16-bit samples)
      */
-    public TrackData loadAudioFile(File file, String displayName) throws IOException {
-        Log.d(TAG, "Loading audio file: " + displayName);
+    private void savePCMDataToFile(short[] pcmData, File outputFile) throws IOException {
+        // Ensure parent directory exists
+        File parentDir = outputFile.getParentFile();
+        if (parentDir != null && !parentDir.exists()) {
+            parentDir.mkdirs();
+        }
         
-        // Decode audio to PCM (supports MP3, WAV, and other formats)
-        short[] samples = MP3Decoder.decodeAudio(file);
+        // Write PCM data as raw bytes (little-endian)
+        java.io.FileOutputStream fos = new java.io.FileOutputStream(outputFile);
+        java.nio.ByteBuffer buffer = java.nio.ByteBuffer.allocate(2).order(java.nio.ByteOrder.LITTLE_ENDIAN);
         
-        return new TrackData(displayName, samples);
+        for (short sample : pcmData) {
+            buffer.putShort(0, sample);
+            fos.write(buffer.array());
+        }
+        
+        fos.close();
+        Log.d(TAG, "Saved PCM data to: " + outputFile.getName() + " (" + (outputFile.length() / (1024 * 1024)) + " MB)");
     }
     
     /**
@@ -224,7 +295,7 @@ public class AudioMixer {
         List<AnnouncementData> newAnnouncements = new ArrayList<>();
         for (AudioMixer.AnnouncementData ann : playlist.getAnnouncements()) {
             // Use the same announcement objects but reset their state
-            AnnouncementData newAnn = new AnnouncementData(ann.name, ann.pcmData);
+            AnnouncementData newAnn = new AnnouncementData(ann.name, ann.pcmFile, ann.sampleCount);
             newAnn.currentPosition = 0;
             newAnn.lastPlayTime = 0;
             newAnn.hasPlayed = false;
@@ -376,10 +447,11 @@ public class AudioMixer {
      * Reset playback state
      */
     private void resetPlaybackState() {
-        // Reset positions
+        // Reset positions and close streams
         synchronized (mainTracks) {
             for (TrackData track : mainTracks) {
                 track.currentPosition = 0;
+                track.closeStream(); // Close any open streams
             }
         }
         currentTrackIndex = 0;
@@ -389,6 +461,7 @@ public class AudioMixer {
                 ann.currentPosition = 0;
                 ann.lastPlayTime = 0;
                 ann.hasPlayed = false;
+                ann.closeStream(); // Close any open streams
             }
         }
         
@@ -445,7 +518,7 @@ public class AudioMixer {
             AnnouncementData currentlyPlayingAnnouncement = null;
             synchronized (announcements) {
                 for (AnnouncementData ann : announcements) {
-                    if (ann.currentPosition > 0 && ann.currentPosition < ann.pcmData.length) {
+                    if (ann.currentPosition > 0 && ann.currentPosition < ann.sampleCount) {
                         currentlyPlayingAnnouncement = ann;
                         break;
                     }
@@ -541,7 +614,7 @@ public class AudioMixer {
                 mixTrack(currentTrack, mixBuffer, samplesPerBuffer, mainVolume * mainVolumeMultiplier);
                 
                 // Check if current track finished
-                if (currentTrack.currentPosition >= currentTrack.pcmData.length) {
+                if (currentTrack.currentPosition >= currentTrack.sampleCount) {
                     // Track finished
                     if (playAtEndOnly && !announcements.isEmpty()) {
                         // "Play at End Only" - play announcements after this track finishes
@@ -588,16 +661,14 @@ public class AudioMixer {
             // Mix the currently playing announcement (if any)
             if (currentlyPlayingAnnouncement != null) {
                 // Continue playing the current announcement
-                mixTrack(currentlyPlayingAnnouncement.pcmData, 
-                        currentlyPlayingAnnouncement.currentPosition, 
-                        mixBuffer, samplesPerBuffer, announcementVolume);
-                currentlyPlayingAnnouncement.currentPosition += samplesPerBuffer * CHANNELS;
+                mixAnnouncement(currentlyPlayingAnnouncement, mixBuffer, samplesPerBuffer, announcementVolume);
                 
-                if (currentlyPlayingAnnouncement.currentPosition >= currentlyPlayingAnnouncement.pcmData.length) {
+                if (currentlyPlayingAnnouncement.currentPosition >= currentlyPlayingAnnouncement.sampleCount) {
                     // Announcement finished - reset for next play
                     currentlyPlayingAnnouncement.currentPosition = 0;
                     currentlyPlayingAnnouncement.lastPlayTime = currentTime; // Update time when finished
                     currentlyPlayingAnnouncement.hasPlayed = true;
+                    currentlyPlayingAnnouncement.closeStream(); // Close stream when done
                     
                     // Move to next announcement in sequence
                     synchronized (announcements) {
@@ -717,8 +788,8 @@ public class AudioMixer {
                         if (announcementIndexToPlay < announcements.size()) {
                             AnnouncementData ann = announcements.get(announcementIndexToPlay);
                             // Start playing this announcement
-                            mixTrack(ann.pcmData, 0, mixBuffer, samplesPerBuffer, announcementVolume);
-                            ann.currentPosition = Math.min(samplesPerBuffer * CHANNELS, ann.pcmData.length);
+                            ann.currentPosition = 0; // Reset position
+                            mixAnnouncement(ann, mixBuffer, samplesPerBuffer, announcementVolume);
                             // Don't set lastPlayTime here - it will be set when announcement finishes
                             ann.hasPlayed = true;
                             Log.d(TAG, "Starting announcement " + announcementIndexToPlay + ": " + ann.name);
@@ -745,46 +816,64 @@ public class AudioMixer {
     }
     
     /**
-     * Mix a track into the mix buffer
+     * Mix a track into the mix buffer by streaming from file
      */
     private void mixTrack(TrackData track, short[] mixBuffer, int samplesPerBuffer, float volume) {
-        int samplesToMix = Math.min(samplesPerBuffer * CHANNELS, 
-                                   track.pcmData.length - track.currentPosition);
-        
-        for (int i = 0; i < samplesToMix; i++) {
-            int mixIndex = i;
-            int trackIndex = track.currentPosition + i;
+        try {
+            PCMFileStream stream = track.getStream();
+            long samplesToMix = Math.min(samplesPerBuffer, track.sampleCount - track.currentPosition);
             
-            if (trackIndex < track.pcmData.length) {
-                // Mix with volume applied
-                int mixed = mixBuffer[mixIndex] + (int)(track.pcmData[trackIndex] * volume);
-                // Clamp to prevent overflow
-                mixBuffer[mixIndex] = (short) Math.max(Short.MIN_VALUE, Math.min(Short.MAX_VALUE, mixed));
+            if (samplesToMix <= 0) {
+                return;
             }
+            
+            // Read samples from file
+            short[] readBuffer = new short[(int)samplesToMix * CHANNELS];
+            int samplesRead = stream.readSamples(track.currentPosition, (int)samplesToMix, readBuffer);
+            
+            if (samplesRead > 0) {
+                // Mix into buffer with volume applied
+                for (int i = 0; i < samplesRead * CHANNELS; i++) {
+                    int mixed = mixBuffer[i] + (int)(readBuffer[i] * volume);
+                    mixBuffer[i] = (short) Math.max(Short.MIN_VALUE, Math.min(Short.MAX_VALUE, mixed));
+                }
+                
+                // Update position
+                track.currentPosition += samplesRead;
+            }
+        } catch (IOException e) {
+            Log.e(TAG, "Error reading track data for " + track.name, e);
         }
-        
-        // Update position
-        track.currentPosition += samplesToMix;
-        
-        // For sequential playback, tracks don't loop individually
-        // They play once and move to next track
-        // (Looping is handled at the playlist level by resetting currentTrackIndex)
     }
     
     /**
-     * Mix a PCM array into the mix buffer (for announcements)
+     * Mix an announcement into the mix buffer by streaming from file
      */
-    private void mixTrack(short[] pcmData, int startPos, short[] mixBuffer, int samplesPerBuffer, float volume) {
-        int samplesToMix = Math.min(samplesPerBuffer * CHANNELS, pcmData.length - startPos);
-        
-        for (int i = 0; i < samplesToMix; i++) {
-            int mixIndex = i;
-            int dataIndex = startPos + i;
+    private void mixAnnouncement(AnnouncementData ann, short[] mixBuffer, int samplesPerBuffer, float volume) {
+        try {
+            PCMFileStream stream = ann.getStream();
+            long samplesToMix = Math.min(samplesPerBuffer, ann.sampleCount - ann.currentPosition);
             
-            if (dataIndex < pcmData.length) {
-                int mixed = mixBuffer[mixIndex] + (int)(pcmData[dataIndex] * volume);
-                mixBuffer[mixIndex] = (short) Math.max(Short.MIN_VALUE, Math.min(Short.MAX_VALUE, mixed));
+            if (samplesToMix <= 0) {
+                return;
             }
+            
+            // Read samples from file
+            short[] readBuffer = new short[(int)samplesToMix * CHANNELS];
+            int samplesRead = stream.readSamples(ann.currentPosition, (int)samplesToMix, readBuffer);
+            
+            if (samplesRead > 0) {
+                // Mix into buffer with volume applied
+                for (int i = 0; i < samplesRead * CHANNELS; i++) {
+                    int mixed = mixBuffer[i] + (int)(readBuffer[i] * volume);
+                    mixBuffer[i] = (short) Math.max(Short.MIN_VALUE, Math.min(Short.MAX_VALUE, mixed));
+                }
+                
+                // Update position
+                ann.currentPosition += samplesRead;
+            }
+        } catch (IOException e) {
+            Log.e(TAG, "Error reading announcement data for " + ann.name, e);
         }
     }
     
@@ -847,7 +936,7 @@ public class AudioMixer {
                 return 0;
             }
             TrackData currentTrack = mainTracks.get(currentTrackIndex);
-            long positionSamples = currentTrack.currentPosition / CHANNELS;
+            long positionSamples = currentTrack.currentPosition;
             return (positionSamples * 1000) / SAMPLE_RATE;
         }
     }
@@ -880,7 +969,7 @@ public class AudioMixer {
             }
             if (currentTrackIndex < mainTracks.size()) {
                 TrackData currentTrack = mainTracks.get(currentTrackIndex);
-                totalSamples += (currentTrack.currentPosition / CHANNELS);
+                totalSamples += currentTrack.currentPosition;
             }
             return (totalSamples * 1000) / SAMPLE_RATE;
         }
@@ -913,7 +1002,7 @@ public class AudioMixer {
             TrackData currentTrack = mainTracks.get(currentTrackIndex);
             long positionSamples = (positionMs * SAMPLE_RATE) / 1000;
             positionSamples = Math.max(0, Math.min(positionSamples, currentTrack.sampleCount));
-            currentTrack.currentPosition = (int) (positionSamples * CHANNELS);
+            currentTrack.currentPosition = positionSamples;
         }
     }
     
@@ -937,7 +1026,7 @@ public class AudioMixer {
                     // Position is in this track
                     currentTrackIndex = i;
                     long offsetInTrack = positionSamples - accumulatedSamples;
-                    track.currentPosition = (int) (offsetInTrack * CHANNELS);
+                    track.currentPosition = offsetInTrack;
                     // Reset all subsequent tracks
                     for (int j = i + 1; j < mainTracks.size(); j++) {
                         mainTracks.get(j).currentPosition = 0;
@@ -951,7 +1040,7 @@ public class AudioMixer {
             currentTrackIndex = mainTracks.size() - 1;
             if (currentTrackIndex >= 0) {
                 TrackData lastTrack = mainTracks.get(currentTrackIndex);
-                lastTrack.currentPosition = lastTrack.pcmData.length;
+                lastTrack.currentPosition = lastTrack.sampleCount;
             }
         }
     }
