@@ -3,6 +3,7 @@ package com.mixapp;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.ImageButton;
 import android.widget.TextView;
 import androidx.annotation.NonNull;
 import androidx.recyclerview.widget.RecyclerView;
@@ -15,21 +16,27 @@ import java.util.List;
 public class PlaylistAdapter extends RecyclerView.Adapter<PlaylistAdapter.PlaylistViewHolder> {
     private List<Playlist> playlists;
     private OnPlaylistClickListener listener;
+    private OnPlaylistDeleteListener deleteListener;
     
     public interface OnPlaylistClickListener {
         void onPlaylistClick(Playlist playlist);
     }
     
-    public PlaylistAdapter(List<Playlist> playlists, OnPlaylistClickListener listener) {
+    public interface OnPlaylistDeleteListener {
+        void onPlaylistDelete(Playlist playlist);
+    }
+    
+    public PlaylistAdapter(List<Playlist> playlists, OnPlaylistClickListener listener, OnPlaylistDeleteListener deleteListener) {
         this.playlists = playlists != null ? new ArrayList<>(playlists) : new ArrayList<>();
         this.listener = listener;
+        this.deleteListener = deleteListener;
     }
     
     @NonNull
     @Override
     public PlaylistViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
         View view = LayoutInflater.from(parent.getContext())
-                .inflate(android.R.layout.simple_list_item_2, parent, false);
+                .inflate(R.layout.item_playlist, parent, false);
         return new PlaylistViewHolder(view);
     }
     
@@ -43,6 +50,12 @@ public class PlaylistAdapter extends RecyclerView.Adapter<PlaylistAdapter.Playli
         holder.itemView.setOnClickListener(v -> {
             if (listener != null) {
                 listener.onPlaylistClick(playlist);
+            }
+        });
+        
+        holder.btnDelete.setOnClickListener(v -> {
+            if (deleteListener != null) {
+                deleteListener.onPlaylistDelete(playlist);
             }
         });
     }
@@ -60,11 +73,13 @@ public class PlaylistAdapter extends RecyclerView.Adapter<PlaylistAdapter.Playli
     static class PlaylistViewHolder extends RecyclerView.ViewHolder {
         TextView tvName;
         TextView tvInfo;
+        ImageButton btnDelete;
         
         PlaylistViewHolder(View itemView) {
             super(itemView);
-            tvName = itemView.findViewById(android.R.id.text1);
-            tvInfo = itemView.findViewById(android.R.id.text2);
+            tvName = itemView.findViewById(R.id.tvPlaylistName);
+            tvInfo = itemView.findViewById(R.id.tvPlaylistInfo);
+            btnDelete = itemView.findViewById(R.id.btnDeletePlaylist);
         }
     }
 }

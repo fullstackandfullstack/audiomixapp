@@ -4,8 +4,8 @@
     <string name="add_track">Add Track</string>
     <string name="add_announcement">Add Announcement</string>
     <string name="play">Play</string>
-    <string name="pause">Pause</string>
-    <string name="stop">Stop</string>
+    <string name="pause">||</string>
+    <string name="stop">&lt;&lt;</string>
     <string name="main_volume">Main Volume</string>
     <string name="announcement_volume">Announcement Volume</string>
     <string name="announcement_interval">Announcement Interval (seconds)</string>

@@ -31,6 +31,7 @@ public class AudioMixer {
     private Thread playbackThread;
     private AtomicBoolean isPlaying = new AtomicBoolean(false);
     private AtomicBoolean shouldStop = new AtomicBoolean(false);
+    private boolean isPaused = false; // Track if we're paused (vs stopped)
     
     // Track data storage
     private List<TrackData> mainTracks = new ArrayList<>();
@@ -356,43 +357,73 @@ public class AudioMixer {
         shouldStop.set(false);
         isPlaying.set(true);
         
-        // Reset all track positions
-        synchronized (mainTracks) {
-            for (TrackData track : mainTracks) {
-                track.currentPosition = 0;
+        // If resuming from pause, don't reset positions
+        if (!isPaused) {
+            // Reset all track positions only if starting fresh (not resuming)
+            synchronized (mainTracks) {
+                for (TrackData track : mainTracks) {
+                    track.currentPosition = 0;
+                }
             }
+            
+            synchronized (announcements) {
+                for (AnnouncementData ann : announcements) {
+                    ann.currentPosition = 0;
+                    ann.lastPlayTime = 0;
+                    ann.hasPlayed = false;
+                }
+            }
+            
+            // Reset sequence tracking
+            nextAnnouncementIndex = 0;
+            currentTrackIndex = 0; // Start with first track
+            waitingForAnnouncementsAfterTrack = false;
+            
+            // Reset fade state - start at 0, then fade in over 3 seconds
+            currentMainVolumeMultiplier = 0.0f;
+            isFadingIn = true; // Always fade in when play starts
+            fadeStartTime = System.currentTimeMillis();
+            
+            // Reset position tracking
+            playbackStartTime = System.currentTimeMillis();
+            totalSamplesPlayed = 0;
+            seekOffsetSamples = 0;
+        } else {
+            // Resuming from pause - don't reset positions, just continue
+            // Adjust fade timing if needed - but only if we were fading in
+            // If fade was complete, don't restart it
+            if (isFadingIn && fadeStartTime > 0) {
+                // Continue fade from where we left off
+                long elapsed = System.currentTimeMillis() - fadeStartTime;
+                if (elapsed < fadeDurationSeconds * 1000) {
+                    // Still fading - adjust start time
+                    fadeStartTime = System.currentTimeMillis() - elapsed;
+                } else {
+                    // Fade complete - don't restart
+                    isFadingIn = false;
+                    currentMainVolumeMultiplier = 1.0f;
+                }
+            }
+            isPaused = false;
         }
         
-        synchronized (announcements) {
-            for (AnnouncementData ann : announcements) {
-                ann.currentPosition = 0;
-                ann.lastPlayTime = 0;
-                ann.hasPlayed = false;
+        // Wait for thread to finish if it's still running from pause
+        if (playbackThread != null && playbackThread.isAlive()) {
+            try {
+                playbackThread.join(500); // Wait up to 500ms for thread to finish
+            } catch (InterruptedException e) {
+                Log.w(TAG, "Interrupted while waiting for thread", e);
+                Thread.currentThread().interrupt();
             }
         }
-        
-        // Reset sequence tracking
-        nextAnnouncementIndex = 0;
-        currentTrackIndex = 0; // Start with first track
-        waitingForAnnouncementsAfterTrack = false;
-        
-        // Reset fade state - start at 0, then fade in over 3 seconds
-        currentMainVolumeMultiplier = 0.0f;
-        isFadingIn = true; // Always fade in when play starts
-        fadeStartTime = System.currentTimeMillis();
-        
-        // Reset position tracking
-        playbackStartTime = System.currentTimeMillis();
-        totalSamplesPlayed = 0;
-        seekOffsetSamples = 0;
         
         audioTrack.play();
         
-        // Start playback thread
+        // Start playback thread (always start new thread when resuming)
         playbackThread = new Thread(this::playbackLoop);
         playbackThread.start();
         
-        Log.d(TAG, "Playback started");
+        Log.d(TAG, "Playback started" + (isPaused ? " (resumed)" : ""));
     }
     
     /**
@@ -407,8 +438,9 @@ public class AudioMixer {
      */
     public void pause() {
         if (audioTrack != null && isPlaying.get()) {
+            isPaused = true; // Mark as paused (not stopped) before stopping thread
+            isPlaying.set(false); // This will cause playback loop to exit
             audioTrack.pause();
-            isPlaying.set(false);
             Log.d(TAG, "Playback paused");
         }
     }
@@ -419,6 +451,7 @@ public class AudioMixer {
     public void stop() {
         shouldStop.set(true);
         isPlaying.set(false);
+        isPaused = false; // Not paused, fully stopped
         
         if (audioTrack != null) {
             try {
@@ -484,6 +517,8 @@ public class AudioMixer {
         isDuckingIn = false;
         duckStartTime = 0;
         volumeBeforeDuck = 1.0f;
+        
+        isPaused = false; // Reset pause state
         
         shouldStop.set(false); // Reset for next play
     }
@@ -808,7 +843,8 @@ public class AudioMixer {
             // Track position is updated via currentPosition in TrackData
         }
         
-        if (audioTrack != null) {
+        // Only stop AudioTrack if we're not paused (i.e., actually stopping)
+        if (audioTrack != null && !isPaused) {
             audioTrack.stop();
         }
         

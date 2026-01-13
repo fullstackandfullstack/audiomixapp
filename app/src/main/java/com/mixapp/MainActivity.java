@@ -131,6 +131,10 @@ public class MainActivity extends AppCompatActivity {
             playlist -> {
                 // Open playlist detail screen
                 showPlaylistDetail(playlist);
+            },
+            playlist -> {
+                // Delete playlist from home screen
+                showDeletePlaylistDialog(playlist);
             }
         );
         recyclerPlaylists.setLayoutManager(new LinearLayoutManager(this));
@@ -183,13 +187,24 @@ public class MainActivity extends AppCompatActivity {
      */
     private void updateHomeScreen() {
         List<Playlist> playlists = playlistManager.getAllPlaylists();
-        if (playlists.isEmpty()) {
+        // Reload all playlists to ensure accurate track/announcement counts
+        List<Playlist> reloadedPlaylists = new ArrayList<>();
+        for (Playlist playlist : playlists) {
+            Playlist loaded = playlistManager.loadPlaylist(playlist.getId());
+            if (loaded != null) {
+                reloadedPlaylists.add(loaded);
+            } else {
+                reloadedPlaylists.add(playlist);
+            }
+        }
+        
+        if (reloadedPlaylists.isEmpty()) {
             recyclerPlaylists.setVisibility(View.GONE);
             tvEmptyState.setVisibility(View.VISIBLE);
         } else {
             recyclerPlaylists.setVisibility(View.VISIBLE);
             tvEmptyState.setVisibility(View.GONE);
-            playlistAdapter.updateList(playlists);
+            playlistAdapter.updateList(reloadedPlaylists);
         }
     }
     
@@ -256,20 +271,28 @@ public class MainActivity extends AppCompatActivity {
                 }
             },
             (position) -> {
-                // Delete track
+                // Delete track with confirmation
                 if (currentPlaylist != null && position >= 0 && position < currentPlaylist.getTracks().size()) {
-                    currentPlaylist.getTracks().remove(position);
-                    trackAdapter.removeItem(position);
-                    playlistManager.savePlaylist(currentPlaylist);
-                    boolean wasPlaying = audioMixer.isPlaying();
-                    if (wasPlaying) {
-                        audioMixer.stop();
-                    }
-                    audioMixer.loadPlaylist(currentPlaylist);
-                    if (wasPlaying && !currentPlaylist.getTracks().isEmpty()) {
-                        audioMixer.play();
-                    }
-                    updateTrackList();
+                    AudioMixer.TrackData track = currentPlaylist.getTracks().get(position);
+                    AlertDialog.Builder builder = new AlertDialog.Builder(MainActivity.this);
+                    builder.setTitle("Delete Track");
+                    builder.setMessage("Are you sure you want to delete \"" + track.name + "\"?");
+                    builder.setPositiveButton("Delete", (dialog, which) -> {
+                        currentPlaylist.getTracks().remove(position);
+                        trackAdapter.removeItem(position);
+                        playlistManager.savePlaylist(currentPlaylist);
+                        boolean wasPlaying = audioMixer.isPlaying();
+                        if (wasPlaying) {
+                            audioMixer.stop();
+                        }
+                        audioMixer.loadPlaylist(currentPlaylist);
+                        if (wasPlaying && !currentPlaylist.getTracks().isEmpty()) {
+                            audioMixer.play();
+                        }
+                        updateTrackList();
+                    });
+                    builder.setNegativeButton("Cancel", null);
+                    builder.show();
                 }
             }
         );
@@ -322,20 +345,28 @@ public class MainActivity extends AppCompatActivity {
                 }
             },
             (position) -> {
-                // Delete announcement
+                // Delete announcement with confirmation
                 if (currentPlaylist != null && position >= 0 && position < currentPlaylist.getAnnouncements().size()) {
-                    currentPlaylist.getAnnouncements().remove(position);
-                    announcementAdapter.removeItem(position);
-                    playlistManager.savePlaylist(currentPlaylist);
-                    boolean wasPlaying = audioMixer.isPlaying();
-                    if (wasPlaying) {
-                        audioMixer.stop();
-                    }
-                    audioMixer.loadPlaylist(currentPlaylist);
-                    if (wasPlaying) {
-                        audioMixer.play();
-                    }
-                    updateAnnouncementList();
+                    AudioMixer.AnnouncementData announcement = currentPlaylist.getAnnouncements().get(position);
+                    AlertDialog.Builder builder = new AlertDialog.Builder(MainActivity.this);
+                    builder.setTitle("Delete Announcement");
+                    builder.setMessage("Are you sure you want to delete \"" + announcement.name + "\"?");
+                    builder.setPositiveButton("Delete", (dialog, which) -> {
+                        currentPlaylist.getAnnouncements().remove(position);
+                        announcementAdapter.removeItem(position);
+                        playlistManager.savePlaylist(currentPlaylist);
+                        boolean wasPlaying = audioMixer.isPlaying();
+                        if (wasPlaying) {
+                            audioMixer.stop();
+                        }
+                        audioMixer.loadPlaylist(currentPlaylist);
+                        if (wasPlaying) {
+                            audioMixer.play();
+                        }
+                        updateAnnouncementList();
+                    });
+                    builder.setNegativeButton("Cancel", null);
+                    builder.show();
                 }
             }
         );
@@ -909,12 +940,13 @@ public class MainActivity extends AppCompatActivity {
     }
     
     /**
-     * Open file picker to select an audio file
+     * Open file picker to select an audio file (supports multiple selection)
      */
     private void pickAudioFile(int requestCode) {
         Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
         intent.setType("audio/*");
         intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
         
         Intent chooser = Intent.createChooser(intent, getString(R.string.select_audio_file));
         startActivityForResult(chooser, requestCode);
@@ -925,10 +957,106 @@ public class MainActivity extends AppCompatActivity {
         super.onActivityResult(requestCode, resultCode, data);
         
         if (resultCode == Activity.RESULT_OK && data != null) {
-            Uri uri = data.getData();
-            if (uri != null && currentPlaylist != null) {
+            if (currentPlaylist == null) {
+                Toast.makeText(this, "Please select a playlist first", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            
+            // Handle multiple file selection
+            if (data.getClipData() != null) {
+                // Multiple files selected
+                android.content.ClipData clipData = data.getClipData();
+                int count = clipData.getItemCount();
+                int maxFiles = 10;
+                
+                if (count > maxFiles) {
+                    Toast.makeText(this, "Maximum " + maxFiles + " files allowed. Selecting first " + maxFiles + " files.", 
+                            Toast.LENGTH_LONG).show();
+                    count = maxFiles;
+                }
+                
+                // Check individual file sizes (allow up to 200MB per file)
+                // Note: Large files will take longer to decode, but are supported
+                List<Uri> urisToLoad = new ArrayList<>();
+                final long maxFileSizeMB = 200; // 200MB per file limit
+                final int[] skippedCount = {0};
+                
+                for (int i = 0; i < count; i++) {
+                    final int fileIndex = i + 1;
+                    Uri uri = clipData.getItemAt(i).getUri();
+                    try {
+                        android.content.ContentResolver resolver = getContentResolver();
+                        android.database.Cursor cursor = resolver.query(uri, null, null, null, null);
+                        if (cursor != null && cursor.moveToFirst()) {
+                            int sizeIndex = cursor.getColumnIndex(android.provider.OpenableColumns.SIZE);
+                            if (sizeIndex >= 0) {
+                                long fileSize = cursor.getLong(sizeIndex);
+                                final long fileSizeMB = fileSize / (1024 * 1024);
+                                
+                                if (fileSizeMB <= maxFileSizeMB) {
+                                    urisToLoad.add(uri);
+                                } else {
+                                    skippedCount[0]++;
+                                    final long finalFileSizeMB = fileSizeMB;
+                                    mainHandler.post(() -> {
+                                        Toast.makeText(this, "File " + fileIndex + " skipped: " + finalFileSizeMB + " MB exceeds " + maxFileSizeMB + " MB limit", 
+                                                Toast.LENGTH_LONG).show();
+                                    });
+                                }
+                            } else {
+                                // Size not available, try to load it anyway
+                                urisToLoad.add(uri);
+                            }
+                            cursor.close();
+                        } else {
+                            // Can't query file info, try to load it anyway
+                            urisToLoad.add(uri);
+                        }
+                    } catch (Exception e) {
+                        // If we can't check size, try to load it anyway
+                        urisToLoad.add(uri);
+                    }
+                }
+                
+                if (skippedCount[0] > 0) {
+                    final int finalSkippedCount = skippedCount[0];
+                    mainHandler.post(() -> {
+                        Toast.makeText(this, finalSkippedCount + " file(s) skipped due to size limit (" + maxFileSizeMB + " MB per file)", 
+                                Toast.LENGTH_LONG).show();
+                    });
+                }
+                
+                // Load files sequentially
+                loadMultipleAudioFiles(urisToLoad, requestCode == REQUEST_CODE_PICK_AUDIO);
+            } else if (data.getData() != null) {
+                // Single file selected
+                Uri uri = data.getData();
                 loadAudioFile(uri, requestCode == REQUEST_CODE_PICK_AUDIO);
             }
+        }
+    }
+    
+    /**
+     * Load multiple audio files sequentially
+     */
+    private void loadMultipleAudioFiles(List<Uri> uris, boolean isMainTrack) {
+        if (uris.isEmpty()) {
+            return;
+        }
+        
+        // Load first file immediately, then queue the rest
+        loadAudioFile(uris.get(0), isMainTrack);
+        
+        // Load remaining files after a short delay (to avoid overwhelming the system)
+        if (uris.size() > 1) {
+            new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                for (int i = 1; i < uris.size(); i++) {
+                    final int index = i;
+                    new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                        loadAudioFile(uris.get(index), isMainTrack);
+                    }, i * 500); // 500ms delay between each file
+                }
+            }, 1000); // Wait 1 second before starting next batch
         }
     }
     
@@ -992,9 +1120,15 @@ public class MainActivity extends AppCompatActivity {
                 outputStream.close();
                 inputStream.close();
                 
-                // Check file size - warn if very large (over 50MB)
+                // Check file size - warn if very large (over 100MB), but allow up to 200MB
                 long fileSizeMB = fileSize / (1024 * 1024);
-                if (fileSizeMB > 50) {
+                if (fileSizeMB > 200) {
+                    Log.w(TAG, "Very large file detected: " + fileSizeMB + " MB");
+                    mainHandler.post(() -> {
+                        Toast.makeText(this, "File is very large (" + fileSizeMB + " MB). This may take a long time to decode or may fail due to memory limits.", 
+                                Toast.LENGTH_LONG).show();
+                    });
+                } else if (fileSizeMB > 100) {
                     Log.w(TAG, "Large file detected: " + fileSizeMB + " MB");
                     mainHandler.post(() -> {
                         Toast.makeText(this, "Large file detected (" + fileSizeMB + " MB). Decoding may take a while...", 
@@ -1045,6 +1179,10 @@ public class MainActivity extends AppCompatActivity {
                         }
                         updateStatus("Track added: " + track.name);
                         updateUI();
+                        // Update home screen if we're on it
+                        if (isHomeScreen) {
+                            updateHomeScreen();
+                        }
                         Toast.makeText(this, "Track added to " + currentPlaylist.getName(), 
                                 Toast.LENGTH_SHORT).show();
                     });
@@ -1060,6 +1198,10 @@ public class MainActivity extends AppCompatActivity {
                         }
                         updateStatus("Announcement added: " + announcement.name);
                         updateUI();
+                        // Update home screen if we're on it
+                        if (isHomeScreen) {
+                            updateHomeScreen();
+                        }
                         Toast.makeText(this, "Announcement added to " + currentPlaylist.getName(), 
                                 Toast.LENGTH_SHORT).show();
                     });
